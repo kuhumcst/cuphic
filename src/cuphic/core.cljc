@@ -133,6 +133,11 @@
   (when (bindings cuphic hiccup)
     hiccup))
 
+(defn apply-bindings
+  "Apply `symbol->value` bindings to a piece of `cuphic`."
+  [symbol->value cuphic]
+  (walk/postwalk #(get symbol->value % %) cuphic))
+
 (defn transform
   "Transform hiccup using cuphic from/to templates.
 
@@ -145,8 +150,7 @@
                              (bindings from hiccup))]
     (if (fn? to)
       (to symbol->value)
-      (walk/postwalk #(get symbol->value % %) to))))
-
+      (apply-bindings symbol->value to))))
 
 (defn transformer
   "Make a transform fn to transform hiccup using cuphic from/to templates."
@@ -296,6 +300,30 @@
                            :height "10px"}}
              [:p {} "p1"]
              [:p {} "p2"]])
+
+  (bindings '[?tag {:id ?id} "some text"]                   ; cuphic
+            [:div {:id "my-id"} "some text"])               ; hiccup
+
+  (apply-bindings '{?tag :p, ?id "my-id"}                   ; symbol->value
+                  '[:p {:id ?id} "some other text"])        ; cuphic
+
+  (transform '[?tag {:id ?id} "some text"]                  ; from cuphic
+             '[:p {:id ?id} "some other text"]              ; to cuphic
+             [:div {:id "my-id"} "some text"])              ; hiccup
+
+
+  (transform (fn [hiccup]                                   ; hiccup->bindings
+               (when (and (map? (second hiccup))
+                          (contains? (second hiccup) :id)
+                          (= (last hiccup) "some text"))
+                 {'?id (:id (second hiccup))}))
+             '[:p {:id ?id} "some other text"]              ; to cuphic
+             [:div {:id "my-id"} "some text"])              ; hiccup
+
+  (transform '[?tag {:id ?id} "some text"]                  ; from cuphic
+             (fn [{:syms [?id] :as symbol->value}]          ; bindings->hiccup
+               [:p {:id ?id} "some other text"])
+             [:div {:id "my-id"} "some text"])              ; hiccup
 
   ;; Valid transformation example
   (transform '[?tag {:style {:width ?width}}

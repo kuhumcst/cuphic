@@ -2,30 +2,16 @@
   "Reagent components for integrating with the shadow DOM."
   (:require [clojure.string :as str]
             [reagent.dom :as rdom]
+            [cuphic.util :as util]
             [kuhumcst.rescope.interop :as interop]
             [kuhumcst.rescope.select :as select]))
-
-(def custom-tag
-  #"\w+(-\w+)+")
-
-;; https://html.spec.whatwg.org/multipage/custom-elements.html#valid-custom-element-name
-(def hyphen-tags
-  #{"annotation-xml"
-    "color-profile"
-    "font-face"
-    "font-face-src"
-    "font-face-uri"
-    "font-face-format"
-    "font-face-name"
-    "missing-glyph"})
 
 (defn hiccup->custom-tags
   "Get a set of all custom tags (as strings) found in a `hiccup` tree."
   [hiccup]
   (->> (select/all hiccup)
        (map (comp str/lower-case name first))
-       (remove hyphen-tags)
-       (filter (partial re-matches custom-tag))
+       (filter util/valid-custom-tag?)
        (set)))
 
 (defn define-elements!
