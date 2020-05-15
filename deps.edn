@@ -1,0 +1,9 @@
+{:paths   ["src"]
+ :deps    {org.clojure/clojurescript {:mvn/version "1.10.764"}
+           hickory                   {:mvn/version "0.7.1"}
+           lambdaisland/deep-diff2   {:mvn/version "2.0.0-93"}}
+ :aliases {:app  {:extra-paths ["dev" "resources"]
+                  :extra-deps  {thheller/shadow-cljs {:mvn/version "2.9.3"}
+                                reagent              {:mvn/version "0.10.0"}
+                                meander/epsilon      {:mvn/version "0.0.412"}}}
+           :test {:extra-paths ["test"]}}}
