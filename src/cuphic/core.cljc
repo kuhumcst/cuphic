@@ -16,8 +16,6 @@
                                                       Deletion
                                                       Insertion])))
 
-;; TODO: some way to handle variable length matches, e.g. using `...` symbol?
-
 (defn vector-map-zip
   "Also zips maps in addition to zipping vectors."
   [root]
@@ -25,6 +23,21 @@
               seq
               (fn [node children] (with-meta (vec children) (meta node)))
               root))
+
+;; https://groups.google.com/d/msg/clojure/FIJ5Pe-3PFM/JpYDQ2ejBgAJ
+(defn skip-subtree
+  "Fast-forward a zipper to skip the subtree at `loc`."
+  [[node _ :as loc]]
+  (cond
+    (zip/end? loc) loc
+    (zip/right loc) (zip/right loc)
+    (zip/up loc) (recur (zip/up loc))
+    :else (assoc loc 1 :end)))
+
+(defn- skip-siblings
+  "Skip the sibling nodes of the node at `loc`."
+  [[node _ :as loc]]
+  (or (zip/right loc) (zip/rightmost loc)))
 
 ;; TODO: unnecessary? remove?
 ;; Check if a keyword Insertion is inside a map.
@@ -55,7 +68,7 @@
             ;; Mismatches can indicate matching logic variables.
             Mismatch
             (when (symbol? -)
-              (if (s/valid? ::cs/var -)
+              (if (s/valid? ::cs/? -)
                 (recur (zip/next loc) (assoc ret - +))
                 (recur (zip/next loc) ret)))
 
@@ -68,47 +81,154 @@
     v
     (into [(first v) {}] (rest v))))
 
-(defn- bindings-delta
-  "Get a delta of the local bindings as a map by comparing `cloc` to `hloc`.
-  Will return nil if the two nodes do not match."
-  [[cnode _ :as cloc] [hnode _ :as hloc]]
+(defn- single-or-nil
+  [coll]
+  (if (not (<= (count coll) 1))
+    (throw (ex-info "Too many items in coll (items > 1)" coll))
+    (first coll)))
+
+(defn- find-quantifier
+  [v]
+  (->> v
+       (filter (partial s/valid? ::cs/quantifier))
+       (single-or-nil)))
+
+;; The presence of a quantifier means we're skipping the branch subtree in order
+;; to preserve the parallel state of the zippers. The remaining child nodes must
+;; still be checked for bindings. This is what coll-bindings accomplishes by
+;; calling bindings-delta on every child node not captured by the quantifier.
+(declare bindings-delta)
+
+(defn- coll-bindings
+  "Get the symbol->value mapping found comparing two sequential collections.
+  This function is used to scoop up bindings that would otherwise be skipped
+  if a quantifier is present.
+  Returns nil if the two vectors don't match."
+  [ccoll hcoll]
+  (when (= (count ccoll) (count hcoll))                     ; performance optm.
+    (loop [[cnode & ccoll] ccoll
+           [hnode & hcoll] hcoll
+           ret {}]
+      (if (and cnode hnode)
+        (when-let [delta (bindings-delta cnode hnode)]
+          (recur ccoll hcoll (merge ret delta)))
+        (when (and (empty? ccoll) (empty? hcoll))
+          ret)))))
+
+(defn- tag+attr-bindings
+  "Get the symbol->value mapping found when comparing only tags and attrs of a
+  normalised Cuphic vector `cv` and a normalised Hiccup vector `hv`.
+  Returns nil if the two vectors don't match."
+  [[ctag cattr :as cv] [htag hattr :as hv]]
+  (when (= (count cv)
+           (count hv))
+    (cond
+      ;; If the tags match, we can rely on checking attr bindings.
+      (= ctag htag)
+      (attr-bindings cattr hattr)
+
+      ;; Otherwise, the Cuphic tag can only be a single-value placeholder,
+      ;; keeping in mind that quantifiers are dealt with elsewhere.
+      (s/valid? ::cs/? ctag)
+      (merge
+        (when (s/valid? ::cs/? ctag)
+          {ctag htag})
+        (attr-bindings cattr hattr)))))
+
+(defn- quantifier-ret
+  "Helper function for returning the value of quantifier-bindings.
+  Ensures that the + quantifier has at least 1 item."
+  [quantifier quantified-items & deltas]
+  (when (not (and (s/valid? ::cs/+ quantifier)
+                  (empty? quantified-items)))
+    (apply merge
+           (when (not-empty quantified-items)
+             {quantifier quantified-items})
+           deltas)))
+
+(defn- quantifier-bindings
+  "Get the symbol->value mapping found when comparing a normalised Cuphic vector
+  `cv` and a normalised Hiccup vector `hv` when `cv` contains a `quantifier`.
+  Returns nil if the two vectors don't match.
+
+  Note: quantifiers cannot replace tags as that would break Hiccup semantics.
+  You may use [? *] instead to match any Hiccup tag."
+  [quantifier cv hv]
   (cond
-    ;; Skip directly to the next node.
+    ;; TODO: spec check here? somewhere else?
+    (= (first cv) quantifier)
+    (throw (ex-info "tag cannot be a quantifier" cv))
+
+    ;; Affixed items
+    (= (last cv) quantifier)
+    (let [cv*            (subvec cv 0 (dec (count cv)))
+          hv*            (subvec hv 0 (count cv*))
+          tag+attr-delta (tag+attr-bindings cv* hv*)
+          coll-delta     (coll-bindings (subvec cv* 2) (subvec hv* 2))]
+      (when (and tag+attr-delta coll-delta)
+        (let [quantified-items (subvec hv (min (count cv*)) (count hv))]
+          (quantifier-ret quantifier
+                          quantified-items
+                          tag+attr-delta
+                          coll-delta))))
+
+    ;; Prefixed items
+    (= (get cv 2) quantifier)
+    (let [tag+attr-delta (tag+attr-bindings (subvec cv 0 2) (subvec hv 0 2))
+          ccoll          (subvec cv 3)
+          hcoll          (subvec hv (- (count hv) (count ccoll)))
+          coll-delta     (coll-bindings ccoll hcoll)]
+      (when (and tag+attr-delta coll-delta)
+        (let [quantified-items (subvec hv 2 (- (count hv) (count ccoll)))]
+          (quantifier-ret quantifier
+                          quantified-items
+                          tag+attr-delta
+                          coll-delta))))
+
+    ;; Infixed items
+    :else
+    (when (>= (count hv) (dec (count cv)))
+      (let [tag+attr-delta (tag+attr-bindings (subvec cv 0 2) (subvec hv 0 2))
+            [before after] (split-with (partial not= quantifier) (subvec cv 2))
+            mid            (+ (count before) 2)
+            mid-end        (- (count hv) (count (rest after)))
+            before-delta   (coll-bindings before
+                                          (subvec hv 2 mid))
+            after-delta    (coll-bindings (rest after)
+                                          (subvec hv mid-end))]
+        (when (and tag+attr-delta before-delta after-delta)
+          (let [quantified-items (subvec hv mid mid-end)]
+            (quantifier-ret quantifier
+                            quantified-items
+                            tag+attr-delta
+                            before-delta
+                            after-delta)))))))
+
+(defn- bindings-delta
+  "Get a delta of the local bindings as a map by comparing `cnode` to `hnode`.
+  Will return nil if the two nodes do not match."
+  [cnode hnode]
+  (cond
+    ;; Nothing to bind. Skip to next node.
     (= cnode hnode)
     {}
 
-    ;; Branches (vectors) are the real object of interest.
+    ;; For a zipper branch (= Hiccup vector):
+    ;;   1) Either return a potential quantifier binding (with other bindings).
+    ;;   2) Otherwise, only return local bindings in tag and attr.
+    ;;   3) When the nodes don't match, nil will bubble up and exit the loop.
     (and (vector? cnode)
          (vector? hnode))
     (let [cv (hicv cnode)
           hv (hicv hnode)]
-      (if (= (count cv)
-             (count hv))
-        ;; Return potential local bindings in tag and attr.
-        (let [[ctag cattr] cv
-              [htag hattr] hv]
-          (merge
-            (when (s/valid? ::cs/var ctag)
-              {ctag htag})
-            (attr-bindings cattr hattr)))
+      (if-let [quantifier (find-quantifier cv)]
+        (when-let [symbol->value (quantifier-bindings quantifier cv hv)]
+          (with-meta symbol->value {:quantifier? true}))
+        (tag+attr-bindings cv hv)))
 
-        ;; TODO: handle variadic content here
-        ;; Fail fast. Nil will bubble up and exit the loop.
-        nil))
-
-    ;; TODO: what about strings?
-    ;; Leafs get skipped. They are handled as part of the content instead.
-    (and (not (vector? cnode))
-         (not (vector? cnode)))
-    {}))
-
-(defn- potential-match?
-  "Helper function for optimising performance."
-  [cuphic hiccup]
-  ;; Account for the fact that the attr map is optional.
-  (<= (dec (count hiccup))
-      (count cuphic)
-      (inc (count hiccup))))
+    ;; Leafs (= content values) can be captured as bindings here.
+    (s/valid? ::cs/? cnode)
+    {cnode hnode}))
 
 (defn bindings
   "Get the symbol->value mapping found when comparing `cuphic` to `hiccup`.
@@ -118,14 +238,18 @@
   are collected incrementally."
   [cuphic hiccup]
   (assert (s/valid? ::cs/cuphic cuphic))                    ; elide in prod
-  (when (potential-match? cuphic hiccup)
-    (loop [cloc (hzip/hiccup-zip cuphic)
-           hloc (hzip/hiccup-zip hiccup)
-           ret  {}]
-      (if (zip/end? cloc)                                   ; TODO: ...and hloc?
-        ret
-        (when-let [delta (bindings-delta cloc hloc)]
-          (recur (zip/next cloc) (zip/next hloc) (merge ret delta)))))))
+  (loop [cloc (hzip/hiccup-zip cuphic)
+         hloc (hzip/hiccup-zip hiccup)
+         ret  {}]
+    (if (zip/end? hloc)
+      (with-meta (dissoc ret '? '* '+) {:source hiccup})
+      (when-let [delta (bindings-delta (zip/node cloc) (zip/node hloc))]
+        ;; Quantifiers mark vectors of dissimilar length, so in order for the
+        ;; two zippers to stay in sync their subtrees must be skipped.
+        (let [[cloc* hloc*] (if (:quantifier? (meta delta))
+                              [(skip-subtree cloc) (skip-subtree hloc)]
+                              [cloc hloc])]
+          (recur (zip/next cloc*) (zip/next hloc*) (merge ret delta)))))))
 
 (defn matches
   "Returns the match, if any, of `hiccup` to `cuphic`."
@@ -230,16 +354,11 @@
          (remove-comment))
     loc))
 
-(defn- skip-subtree
-  "Skip the descendants of the current node."
-  [[node _ :as loc]]
-  (or (zip/right loc) (zip/rightmost loc)))
-
 (defn- edit-branch
   [prefix attr-kmap wrapper transformers loc]
   (let [loc* (inject wrapper transformers loc)]
     (if (:replaced? (meta (zip/node loc*)))
-      (skip-subtree loc*)
+      (skip-siblings loc*)
       (->> loc*
            (attr->data-attr)
            (rename-attr attr-kmap)
@@ -274,90 +393,3 @@
                             (edit-node loc))))))))
   ([hiccup]
    (rewrite hiccup nil)))
-
-
-
-
-(comment
-  ;; Invalid example
-  (bindings '[?tag {:style
-                    ;; should fail here
-                    {?df ?width}}
-              [:p {} "p1"]
-              [:p {} "p2"]]
-            [:div {:style {:width  "5px"
-                           :height "10px"}}
-             [:p {} "p1"
-              ;; should fail here, but will not reach due to spec assert
-              [:glen]]
-             [:p {} "p2"]])
-
-  ;; Valid logic var extraction example
-  (bindings '[?tag {:style {:width ?width}}
-              [:p {} "p1"]
-              [:p {} "p2"]]
-            [:div {:style {:width  "5px"
-                           :height "10px"}}
-             [:p {} "p1"]
-             [:p {} "p2"]])
-
-  (bindings '[?tag {:id ?id} "some text"]                   ; cuphic
-            [:div {:id "my-id"} "some text"])               ; hiccup
-
-  (apply-bindings '{?tag :p, ?id "my-id"}                   ; symbol->value
-                  '[:p {:id ?id} "some other text"])        ; cuphic
-
-  (transform '[?tag {:id ?id} "some text"]                  ; from cuphic
-             '[:p {:id ?id} "some other text"]              ; to cuphic
-             [:div {:id "my-id"} "some text"])              ; hiccup
-
-
-  (transform (fn [hiccup]                                   ; hiccup->bindings
-               (when (and (map? (second hiccup))
-                          (contains? (second hiccup) :id)
-                          (= (last hiccup) "some text"))
-                 {'?id (:id (second hiccup))}))
-             '[:p {:id ?id} "some other text"]              ; to cuphic
-             [:div {:id "my-id"} "some text"])              ; hiccup
-
-  (transform '[?tag {:id ?id} "some text"]                  ; from cuphic
-             (fn [{:syms [?id] :as symbol->value}]          ; bindings->hiccup
-               [:p {:id ?id} "some other text"])
-             [:div {:id "my-id"} "some text"])              ; hiccup
-
-  ;; Valid transformation example
-  (transform '[?tag {:style {:width ?width}}
-               [_ {} "p1"]
-               [_ {} "p2"]]
-
-             '[:div
-               [?tag {:style {:width ?width}}]
-               [:p "width: " ?width]]
-
-             [:span {:style {:width  "5px"
-                             :height "10px"}}
-              [:p {} "p1"]
-              [:p {} "p2"]])
-
-  ;; Valid transformation using an fn as "to" template
-  (transform '[?tag {:style {:width ?width}}
-               [_ {} "p1"]
-               [_ {} "p2"]]
-
-             (fn [{:syms [?tag ?width]}]
-               [:div
-                [?tag {:style {:width ?width}}]
-                [:p "width: " ?width]])
-
-             [:span {:style {:width  "5px"
-                             :height "10px"}}
-              [:p {} "p1"]
-              [:p {} "p2"]])
-
-  ;; should be false
-  (s/valid? ::cs/cuphic '[?tag {:style {?df ?width}}
-                          [:p {} "p1"]
-                          [:p {} "p2"]])
-
-  #_.)
-
