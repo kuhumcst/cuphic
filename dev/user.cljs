@@ -45,12 +45,23 @@
          :title (m/app da-type ?type)}
      [:slot]]))
 
-;; TODO: not working - see whitespace todo in hiccup ns
-(def cuphic-transformer
+(def list-as-ul
   (cup/transformer
-    :from '[:pb {:n    ?n
-                 :facs ?facs}]
-    :to '[:div "TEST"]))
+    :from '[:list +items]
+    :to (fn [{:syms [+items]}]
+          (into [:ul] (for [[tag attr & content] +items]
+                        (into [:li] content))))))
+
+(def ref-as-anchor
+  (cup/transformer
+    :from '[? {:ref  ?ref
+               :type ?type} *]
+    :to (fn [{:syms [?ref ?type]}]
+          ;; TODO: bug in attr-bindings - now need to check for attr existence
+          (when ?ref
+            [:a {:href  ?ref
+                 :title (da-type ?type)}
+             [:slot]]))))
 
 (defonce css-href
   (interop/auto-revoked (atom nil)))
@@ -62,8 +73,8 @@
                        (cup/rewrite {:prefix       "tei"
                                      :attr-kmap    attr-kmap
                                      :wrapper      rescope/shadow-wrapper
-                                     :transformers [meander-transformer
-                                                    cuphic-transformer]}))
+                                     :transformers [ref-as-anchor
+                                                    list-as-ul]}))
         teiheader  (select/one hiccup (select/element :tei-teiheader))
         facsimile  (select/one hiccup (select/element :tei-facsimile))
         text       (select/one hiccup (select/element :tei-text))

@@ -55,6 +55,10 @@
                            :slot ::slot
                            :other (complement map?))))))
 
+;; TODO: reuse ::cuphic somehow?
+(s/def ::fragment
+  (s/and vector? (comp #{:<>} first)))
+
 (comment
   ;; TODO: should be invalid according to spec
   (s/conform ::cuphic '[*])
