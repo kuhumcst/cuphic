@@ -2,9 +2,7 @@
   "Data transformations for hiccup."
   (:require [clojure.spec.alpha :as s]
             [clojure.zip :as zip]
-            [clojure.set :as set]
             [hickory.zip :as hzip]
-            [cuphic.util :as util]
             [cuphic.spec :as cs]
             [lambdaisland.deep-diff2 :as dd]
             #?(:cljs [lambdaisland.deep-diff2.diff-impl :refer [Mismatch
@@ -548,79 +546,36 @@
   [& {:keys [from to]}]
   (partial transform from to))
 
-(defn- as-data-*
-  [attr]
-  (into {} (for [[k v] attr]
-             [(keyword (util/data-* k)) v])))
-
-(defn- attr->data-attr
-  "Convert all attributes into data-* attributes."
-  [[[tag attr & content :as node] _ :as loc]]
-  (if (map? attr)
-    (zip/edit loc assoc 1 (as-data-* attr))
-    loc))
-
-(defn- rename-attr
-  "Rename attr keys according to `kmap`."
-  [kmap [[tag attr & content :as node] _ :as loc]]
-  (if (and kmap (map? attr))
-    (zip/edit loc assoc 1 (set/rename-keys attr (as-data-* kmap)))
-    loc))
-
-;; Only modifies metadata. Later this is merged into attr by meta-into-attr.
-(defn- inject
-  "Insert transformed Hiccup when node `loc` matches one of the `transformers`.
-  A `wrapper` fn taking [old-node new-node] as args can be supplied to modify
-  the new node and its metadata. If no wrapper is supplied, the new node
-  entirely replaces the old node in the tree."
-  [wrapper transformers [[tag attr & content :as node] _ :as loc]]
-  (if-let [hiccup (->> (map #(% node) transformers)
-                       (remove nil?)
-                       (first))]
-    (let [new-node (if wrapper
-                     (wrapper node hiccup)
-                     (vary-meta hiccup assoc :replaced? true))]
-      (zip/replace loc new-node))
-    loc))
-
-(defn- add-prefix
-  "Transform a hiccup vector node `loc` to a valid custom element name by
-  setting a custom `prefix`."
-  [prefix [node _ :as loc]]
-  (let [tag     (name (first node))
-        new-tag (keyword (util/prefixed prefix tag))]
-    (zip/edit loc assoc 0 new-tag)))
-
-(defn- meta-into-attr
-  "Merge the element metadata into the attr. Mimics the behaviour of reagent."
-  [[[tag attr & content :as node] _ :as loc]]
-  (if-let [m (meta node)]
-    (zip/edit loc update 1 merge m)
-    loc))
-
-;; Every branch is a hiccup vector, while everything else is a leaf.
-(defn- edit-branch
-  [loc {:keys [prefix attr-kmap wrapper transformers]
-        :as   opts}]
-  (let [loc*        (inject wrapper transformers loc)
-        ?add-prefix (fn [loc] (if (not-empty prefix)
-                                (add-prefix prefix loc)
-                                loc))]
-    (if (:replaced? (meta (zip/node loc*)))
-      (skip-siblings loc*)
-      (->> loc*
-           (attr->data-attr)
-           (rename-attr attr-kmap)
-           (?add-prefix)
-           (meta-into-attr)))))
+(defn- apply-stage
+  "Apply a `stage` of transformations to a Hiccup `node`."
+  [node {:keys [wrapper transformers default]
+         :or   {default identity}
+         :as   stage}]
+  (default (if-let [new-node (->> (map #(% node) transformers)
+                                  (remove nil?)
+                                  (first))]
+             (if wrapper
+               (wrapper node new-node)
+               new-node)
+             node)))
 
 (defn rewrite
-  "Process relevant nodes of a zipper made from a `hiccup` tree based on `opts`.
-  Return the transformed structure."
-  [hiccup {:keys [prefix attr-kmap wrapper transformers] :as opts}]
+  "Process the nodes of `hiccup` tree in a sequence of `stages`.
+
+  Stages are maps with the following keys (optional):
+    :transformers - sequence of transformer fns applied to each Hiccup node.
+    :wrapper      - fn applied to [node new-node] on successful transformations.
+    :default      - fn applied to every Hiccup node as a final step.
+
+  Note: a transformer is an fn that, given a Hiccup node, attempts to match the
+  node, returning a transformed node on matches, otherwise returning nil."
+  [hiccup stages]
   (loop [[node :as loc] (hzip/hiccup-zip hiccup)]
     (if (zip/end? loc)
       (zip/root loc)
       (recur (zip/next (if (vector? node)
-                         (edit-branch loc opts)
+                         (let [new-node (reduce apply-stage node stages)]
+                           (if (not= node new-node)
+                             (zip/replace loc new-node)
+                             loc))
                          loc))))))

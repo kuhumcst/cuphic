@@ -5,6 +5,7 @@
             [meander.epsilon :as m]
             [kuhumcst.rescope.formats.xml :as xml]
             [cuphic.core :as cup]
+            [cuphic.helpers :as helpers]
             [kuhumcst.rescope.select :as select]
             [kuhumcst.rescope.style :as style]
             [kuhumcst.rescope.interop :as interop]
@@ -15,10 +16,6 @@
 
 (def css-example
   (resource/inline "examples/css/tei.css"))
-
-(def attr-kmap
-  {:xml:lang :lang
-   :xml:id   :id})
 
 (def da-type
   {"conference" "Konference"
@@ -66,15 +63,23 @@
 (defonce css-href
   (interop/auto-revoked (atom nil)))
 
+(def stages
+  [{:transformers [ref-as-anchor
+                   list-as-ul]
+    :wrapper      rescope/shadow-wrapper
+    :default      (fn [node]
+                    (->> node
+                         (helpers/attr->data-attr)
+                         (helpers/rename-attr {:xml:lang :lang
+                                               :xml:id   :id})
+                         (helpers/add-prefix "tei")
+                         (helpers/meta-into-attr)))}])
+
 (defn app
   []
   (let [css        (style/prefix-css "tei" css-example)
         hiccup     (-> (xml/parse tei-example)
-                       (cup/rewrite {:prefix       "tei"
-                                     :attr-kmap    attr-kmap
-                                     :wrapper      rescope/shadow-wrapper
-                                     :transformers [ref-as-anchor
-                                                    list-as-ul]}))
+                       (cup/rewrite stages))
         teiheader  (select/one hiccup (select/element :tei-teiheader))
         facsimile  (select/one hiccup (select/element :tei-facsimile))
         text       (select/one hiccup (select/element :tei-text))
