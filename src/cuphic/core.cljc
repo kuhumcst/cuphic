@@ -218,8 +218,8 @@
         (let [section-end (+ i section-size)
               candidate   (subvec nodes i section-end)]
           (if-let [delta (coll-bindings ccoll candidate)]
-            (with-meta delta {:section {:begin i
-                                        :end   section-end}})
+            (with-meta delta {:begin i
+                              :end   section-end})
             (recur (inc i))))))))
 
 ;; TODO: tests
@@ -257,7 +257,7 @@
           (and (not (:before search))
                (seq before))
           (if-let [before-search (section-search before nodes i)]
-            (recur (:end (:section (meta before-search)))
+            (recur (:end (meta before-search))
                    (assoc search :before before-search)
                    ret)
             ret)
@@ -267,7 +267,7 @@
           (and (not (:after search))
                (seq after))
           (if-let [after-search (section-search after nodes i)]
-            (recur (:end (:section (meta after-search)))
+            (recur (:end (meta after-search))
                    (assoc search :after after-search)
                    ret)
             ret)
@@ -278,7 +278,7 @@
                (seq before)
                (not (seq after)))
           (let [recur-search (section-search before nodes i)]
-            (recur (or (:begin (:section (meta recur-search)))
+            (recur (or (:begin (meta recur-search))
                        i)
                    (assoc search :recur (or recur-search {}))
                    ret))
@@ -288,11 +288,11 @@
           ;;   1) Captures until the next recurrence of the `begin` section.
           ;;   2) Captures all of the remaining nodes.
           quantifier
-          (let [between-begin (or (:end (:section (meta (:before search))))
-                                  (:end (:section (meta (last ret))))
+          (let [between-begin (or (:end (meta (:before search)))
+                                  (:end (meta (last ret)))
                                   0)
-                between-end   (or (:begin (:section (meta (:after search))))
-                                  (:begin (:section (meta (:recur search))))
+                between-end   (or (:begin (meta (:after search)))
+                                  (:begin (meta (:recur search)))
                                   (count nodes))
                 between       (subvec nodes between-begin between-end)
                 ret*          (when (not (and (empty? between)
@@ -305,19 +305,19 @@
                                               (merge {quantifier between}
                                                      (:before search)
                                                      (:after search))
-                                              {:section section}))))]
+                                              section))))]
             (recur (max i between-end) {} (or ret* ret)))
 
           ;; If there is NO quantifier, i.e. the entire fragment is `before`,
           ;; we add the bindings to the result vector and increment the index.
           (:before search)
-          (let [before-section (:section (meta (:before search)))
+          (let [before-section (meta (:before search))
                 section        {:begin (:begin before-section)
                                 :end   (+ (:begin before-section)
                                           (count before))}
                 ret*           (conj ret (with-meta (merge (:before search)
                                                            (:after search))
-                                                    {:section section}))]
+                                                    section))]
             (recur (:end before-section) {} ret*))
 
           ;; An unsuccessful search will return the empty list of results.
@@ -368,25 +368,33 @@
         ;; A fragment is essentially a special quantifier.
         (when-let [hit (-> (fragment-bindings fragment (subvec hv 2) :limit 1)
                            (first))]
-          (let [before-cv   (subvec cv 0 (min n (count cv)))
-                before-hv   (subvec hv 0 (+ 2 (:begin (:section (meta hit)))))
-                after-cv    (subvec cv (min (inc n) (count cv)))
-                between-end (min (max (- (count hv)
-                                         (count after-cv))
-                                      0)
-                                 (count hv))
-                after-hv    (subvec hv between-end)
-                between-hv  (subvec hv n between-end)]
+          (let [before-cv     (subvec cv 0 (min n (count cv)))
+                after-cv      (subvec cv (min (inc n) (count cv)))
+                before-hv     (subvec hv 0 (+ 2 (:begin (meta hit))))
+                between-end   (min (max (- (count hv)
+                                           (count after-cv))
+                                        0)
+                                   (count hv))
+                between-start (dec (count before-hv))
+                between-hv    (subvec hv between-start between-end)
+                after-hv      (subvec hv between-end)]
             ;; TODO: what about matching 0 fragments?
             (when-let [before-delta (bindings before-cv before-hv)]
               (when-let [after-delta (coll-bindings after-cv after-hv)]
                 (when-let [<> (-> (fragment-bindings fragment between-hv)
                                   (not-empty))]
-                  (with-meta (merge before-delta
-                                    after-delta
-                                    {'<> <>})
-                             {:skip [cv hv]}))))))
+                  (with-meta
+                    (merge before-delta
+                           after-delta
+                           {'<> (with-meta
+                                  <>
+                                  {:begin (+ between-start
+                                             (:begin (meta (first <>))))
+                                   :end   (+ between-start
+                                             (:end (meta (last <>))))})})
+                    {:skip [cv hv]}))))))
 
+        ;; TODO: multiple quantifiers should be allowed between non-quantifier segments
         ;; For a regular Cuphic vector:
         ;;   1) Either return a potential quantifier binding + other bindings.
         ;;   2) Otherwise, only return local bindings in tag and attr.

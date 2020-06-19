@@ -12,7 +12,8 @@
             [kuhumcst.rescope.core :as rescope]))
 (def tei-example
   ;(resource/inline "examples/tei/1151anno-anno-tei.xml"))
-  (resource/inline "examples/tei/tei_example.xml"))
+  ;(resource/inline "examples/tei/tei_example.xml"))
+  (resource/inline "examples/tei/test-1307-anno-tei.xml"))
 
 (def css-example
   (resource/inline "examples/css/tei.css"))
@@ -60,11 +61,22 @@
                  :title (da-type ?type)}
              [:slot]]))))
 
+(def wrap-pbs
+  (cup/transformer
+    :from '[:div * [:<> [:pb] +]]
+    :to (fn [{:syms [<>] :as bindings}]
+          (let [{:keys [begin end]} (meta <>)
+                source (:source (meta bindings))]
+            (vec (concat (subvec source 0 begin)
+                         [(into [:pbs] (subvec source begin end))]
+                         (subvec source end)))))))
+
 (defonce css-href
   (interop/auto-revoked (atom nil)))
 
 (def stages
-  [{:transformers [ref-as-anchor
+  [{:transformers [wrap-pbs]}
+   {:transformers [ref-as-anchor
                    list-as-ul]
     :wrapper      rescope/shadow-wrapper
     :default      (fn [node]
