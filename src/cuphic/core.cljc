@@ -358,26 +358,28 @@
       ;; Fragments are a special case with handling similar to the * quantifier.
       ;; If tag and attr match, the children will be scanned for the fragment.
       ;; Note: assumes that `[:<> ...]` has been coerced to `[? [:<> ...]]`.
-      (if-let [[n fragment] (->> (map-indexed vector cv)
-                                 (filter (comp (partial s/valid? ::cs/fragment)
-                                               second))
-                                 (first))]
+      (if-let [[cv-n fragment] (->> (map-indexed vector cv)
+                                    (filter (comp #(s/valid? ::cs/fragment %)
+                                                  second))
+                                    (first))]
         ;; TODO: performance improvements, should only do initial 1-fragment search if before-cv contains no quantifiers
         ;; TODO: expand description, relationship with quantifiers
         ;; TODO: support quantifier for after-hv content too
         ;; A fragment is essentially a special quantifier.
         (when-let [hit (-> (fragment-bindings fragment (subvec hv 2) :limit 1)
                            (first))]
-          (let [before-cv     (subvec cv 0 (min n (count cv)))
-                after-cv      (subvec cv (min (inc n) (count cv)))
-                before-hv     (subvec hv 0 (+ 2 (:begin (meta hit))))
-                between-end   (min (max (- (count hv)
-                                           (count after-cv))
-                                        0)
-                                   (count hv))
-                between-start (dec (count before-hv))
-                between-hv    (subvec hv between-start between-end)
-                after-hv      (subvec hv between-end)]
+          (let [before-cv    (subvec cv 0 cv-n)
+                after-cv     (subvec cv (min (inc cv-n) (count cv)))
+                hv-n         (+ 2 (:begin (meta hit)))
+                fragment-pos (max cv-n hv-n)
+                before-hv    (subvec hv 0 fragment-pos)
+                ;; TODO: clarify between-end
+                between-end  (min (max (- (count hv)
+                                          (count after-cv))
+                                       0)
+                                  (count hv))
+                between-hv   (subvec hv fragment-pos between-end)
+                after-hv     (subvec hv between-end)]
             ;; TODO: what about matching 0 fragments?
             (when-let [before-delta (bindings before-cv before-hv)]
               (when-let [after-delta (coll-bindings after-cv after-hv)]
@@ -388,9 +390,9 @@
                            after-delta
                            {'<> (with-meta
                                   <>
-                                  {:begin (+ between-start
+                                  {:begin (+ fragment-pos
                                              (:begin (meta (first <>))))
-                                   :end   (+ between-start
+                                   :end   (+ fragment-pos
                                              (:end (meta (last <>))))})})
                     {:skip [cv hv]}))))))
 
@@ -407,54 +409,6 @@
     ;; Leafs (= content values) can be captured as bindings here.
     (s/valid? ::cs/? cnode)
     {cnode hnode}))
-
-
-(comment
-  ;; The first two numbers are captured as ?x and ?y, the rest in <>
-  (bindings '[?tag ?x ?y [:<> 1 2]]
-            [:p 1 2 1 2])
-  ;; The same applies to the numbers after here
-  (bindings '[?tag ?x [:<> 2 1] ?y]
-            [:p 0 2 1 3])
-
-  ;; Behaviour of quantifiers in fragments demonstrating how capturing ends
-  ;; when a pattern recurs.
-  (bindings '[?tag ?x [:<> ?n *rest] ?y]                    ; *rest is empty
-            [:p 0 1 2 3 1 2 3 99])
-  (bindings '[?tag ?x [:<> ?n +rest] ?y]                    ; no match as +rest conflicts with ?n in next fragment
-            [:p 0 1 2 3 1 2 3 99])
-  (bindings '[?tag ?x [:<> ?a ?b] ?y]                       ; every pair matches
-            [:p 0 1 2 3 4 5 6 99])
-
-  ;; Relationship between quantifiers and fragments.
-  (-> (bindings '[:div {:type ?type}
-                  +before
-                  [:<>
-                   [:pb {:n ?n :facs ?facs}]
-                   +page-content]]
-                [:div {:type "letter"}
-
-                 ;; +before
-                 [:fw {}]
-                 [:opener
-                  {:xml:id "xx"}
-                  [:dateline {} [:settlement {:ref "#STED"}] [:date {:when "1942-06-30"}]]
-                  [:salute {} [:persname {:type "receiver", :ref "xx"} "MODTAGER "]]]
-
-                 ;; <>, first
-                 [:pb {:n "1", :facs "24.628"}]
-                 [:p {:xml:id "p1"} [:persname {:ref "#np60"} "Jens Holt"] " , 16 "]
-                 [:p {:xml:id "p2"} [:date {:when "1942-06-30"} "30 juni 1942"]]
-                 [:p {:xml:id "p3"} "Kære " [:persname {:ref "#np60"} "Holt"] " ,"]
-
-                 ;; <>, second
-                 [:pb {:n "2", :facs "24.629"}]
-                 [:p {:xml:id "p5"} "2 "]
-                 [:p {:xml:id "p6"} "mit bord maaned efter maaned et fuldt færdigt manuskript , som ikke kan komme ud !"]])
-      #_(keys))
-
-
-  #_.)
 
 (defn bindings
   "Get the symbol->value mapping found when comparing `cuphic` to `hiccup`.
@@ -515,25 +469,6 @@
                          (splice-fragments loc (get symbol->value '<>))
 
                          :else loc))))))
-
-(comment
-  ;; Should fail as [:div ...] does not directly contain any [:<> 1 2].
-  (transform '[?tag [:<> 1 2]]
-             '[?tag [:<> 3 4]]
-             [:div
-              [:head
-               [:p 1 2 1 2]]])
-
-  ;; Switches places of the numbers.
-  (transform '[?tag [:<> ?x ?y]]
-             '[?tag [:<> ?y ?x]]
-             [:p 4 5 1 2 1 2])
-
-  ;; TODO: silently throws away first two numbers? Is this desirable?
-  (transform '[?tag [:<> 1 2]]
-             '[?tag [:<> 99 88]]
-             [:p 4 5 1 2 1 2])
-  #_.)
 
 (defn transform
   "Transform hiccup using cuphic from/to templates.
