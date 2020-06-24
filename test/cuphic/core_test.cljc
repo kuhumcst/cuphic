@@ -52,7 +52,9 @@
       (testing "+"
         (is (= '{?tag :div +rest ["2" "3"]}
                (cup/bindings '[?tag "1" +rest] [:div "1" "2" "3"])))
-        (is (= '{?tag :div ?other "1" +rest ["2" "3"]}
+        (is (= '{?tag :div ?other "1" +rest ["3"]}
+               (cup/bindings '[?tag ?other "2" +rest] [:div "1" "2" "3"])))
+        (is (= nil
                (cup/bindings '[?tag ?other +rest] [:div "1" "2" "3"])))
         (is (= nil
                (cup/bindings '[?tag "1" +rest] [:div "1"]))))
@@ -60,7 +62,9 @@
       (testing "*"
         (is (= '{?tag :div *rest ["2" "3"]}
                (cup/bindings '[?tag "1" *rest] [:div "1" "2" "3"])))
-        (is (= '{?tag :div ?other "1" *rest ["2" "3"]}
+        (is (= '{?tag :div ?other "1" *rest ["3"]}
+               (cup/bindings '[?tag ?other "2" *rest] [:div "1" "2" "3"])))
+        (is (= nil
                (cup/bindings '[?tag ?other *rest] [:div "1" "2" "3"])))
         (is (= '{?tag :div}
                (cup/bindings '[?tag "1" *rest] [:div "1"])))))
@@ -69,7 +73,9 @@
       (testing "+"
         (is (= '{?tag :div +rest ["1" "2"]}
                (cup/bindings '[?tag +rest "3"] [:div "1" "2" "3"])))
-        (is (= '{?tag :div ?other "3" +rest ["1" "2"]}
+        (is (= '{?tag :div ?other "3" +rest ["1"]}
+               (cup/bindings '[?tag +rest "2" ?other] [:div "1" "2" "3"])))
+        (is (= nil
                (cup/bindings '[?tag +rest ?other] [:div "1" "2" "3"])))
         (is (= nil
                (cup/bindings '[?tag +rest "1"] [:div "1"]))))
@@ -77,7 +83,9 @@
       (testing "*"
         (is (= '{?tag :div *rest ["1" "2"]}
                (cup/bindings '[?tag *rest "3"] [:div "1" "2" "3"])))
-        (is (= '{?tag :div ?other "3" *rest ["1" "2"]}
+        (is (= '{?tag :div ?other "3" *rest ["1"]}
+               (cup/bindings '[?tag *rest "2" ?other] [:div "1" "2" "3"])))
+        (is (= nil
                (cup/bindings '[?tag *rest ?other] [:div "1" "2" "3"])))
         (is (= '{?tag :div}
                (cup/bindings '[?tag *rest "1"] [:div "1"])))))

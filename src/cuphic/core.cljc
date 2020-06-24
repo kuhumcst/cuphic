@@ -81,15 +81,9 @@
     v
     (into [(first v) {}] (rest v))))
 
-(defn- single-or-nil
-  [coll]
-  (if (not (<= (count coll) 1))
-    (throw (ex-info "Too many items in coll (items > 1)" coll))
-    (first coll)))
-
-(defn- find-quantifier
+(defn- contains-quantifier?
   [v]
-  (single-or-nil (filter (partial s/valid? ::cs/quantifier) v)))
+  (seq (filter (partial s/valid? ::cs/quantifier) v)))
 
 ;; The presence of a quantifier means we're skipping the branch subtree in order
 ;; to preserve the parallel state of the zippers. The remaining child nodes must
@@ -135,57 +129,6 @@
           {ctag htag})
         (attr-bindings cattr hattr)))))
 
-(defn- quantifier-ret
-  "Helper function for returning the value of quantifier-bindings.
-  Ensures that the + quantifier has at least 1 item."
-  [quantifier quantified-items & deltas]
-  (when (not (and (s/valid? ::cs/+ quantifier)
-                  (empty? quantified-items)))
-    (apply merge
-           (when (not-empty quantified-items)
-             {quantifier quantified-items})
-           deltas)))
-
-(defn- quantifier-bindings
-  "Get the symbol->value mapping found when comparing `ccoll` and `hcoll` when
-  `ccoll` contains a `quantifier`. Returns nil if the two vectors don't match.
-
-  Note: quantifiers cannot replace tags as that would break Hiccup semantics.
-  You may use [? *] instead to match any Hiccup tag."
-  [quantifier ccoll hcoll]
-  (cond
-    ;; Affixed items
-    (= (last ccoll) quantifier)
-    (let [ccoll*     (subvec ccoll 0 (dec (count ccoll)))
-          split-pos  (count ccoll*)
-          hcoll*     (subvec hcoll 0 split-pos)
-          coll-delta (coll-bindings ccoll* hcoll*)]
-      (when coll-delta
-        (quantifier-ret quantifier (subvec hcoll split-pos) coll-delta)))
-
-    ;; Prefixed items
-    (= (first ccoll) quantifier)
-    (let [ccoll*     (subvec ccoll 1)
-          split-pos  (- (count hcoll) (count ccoll*))
-          hcoll*     (subvec hcoll split-pos)
-          coll-delta (coll-bindings ccoll* hcoll*)]
-      (when coll-delta
-        (quantifier-ret quantifier (subvec hcoll 0 split-pos) coll-delta)))
-
-    ;; Infixed items
-    :else
-    (when (>= (count hcoll) (dec (count ccoll)))
-      (let [[before [_ & after]] (split-with #(not= quantifier %) ccoll)
-            mid          (count before)
-            mid-end      (- (count hcoll) (count after))
-            before-delta (coll-bindings before (subvec hcoll 0 mid))
-            after-delta  (coll-bindings after (subvec hcoll mid-end))]
-        (when (and before-delta after-delta)
-          (quantifier-ret quantifier
-                          (subvec hcoll mid mid-end)
-                          before-delta
-                          after-delta))))))
-
 (defn- section-search
   "Find the bindings of the first occurrence of fixed-length sequence `ccoll` in
   `nodes` starting the search at the `begin` index. As an aid to the caller, the
@@ -201,6 +144,70 @@
             (with-meta delta {:begin i
                               :end   section-end})
             (recur (inc i))))))))
+
+(defn- holes
+  "Get the holes between a collection of `section-deltas`."
+  [section-deltas]
+  (let [delta->begin+end (fn [delta]
+                           (let [{:keys [begin end]} (meta delta)]
+                             [begin end]))
+        begin+ends       (mapcat delta->begin+end section-deltas)]
+    (butlast (rest begin+ends))))
+
+(defn- section-bindings
+  [sections nodes]
+  (loop [[section & sections*] sections
+         begin 0
+         ret   []]
+    (if section
+      (when-let [hit (section-search section nodes begin)]
+        (recur sections* (:end (meta hit)) (conj ret hit)))
+      ret)))
+
+(defn- not-adjacent
+  "Return `coll` if no adjacent values satisfy `pred`."
+  [pred coll]
+  (reduce (fn [coll val]
+            (if (and (pred val)
+                     (pred (peek coll)))
+              (reduced nil)
+              (conj coll val)))
+          (empty coll)
+          coll))
+
+(defn- quantifier-bindings
+  "Get the symbol->value mapping found when comparing `ccoll` and `hcoll` when
+  `ccoll` contains a `quantifier`. Returns nil if the two vectors don't match."
+  [ccoll hcoll]
+  (when (not-adjacent symbol? ccoll)
+    (let [quantifier?         (partial s/valid? ::cs/quantifier)
+          all-sections        (partition-by quantifier? ccoll)
+          quantifier-sections (filter (comp quantifier? first) all-sections)
+          other-sections      (remove (comp quantifier? first) all-sections)]
+      (when (every? #(= (count %) 1) quantifier-sections)
+        (when-let [other-deltas (section-bindings other-sections hcoll)]
+          (let [begin            (:begin (meta (first other-deltas)))
+                end              (:end (meta (last other-deltas)))
+                quantifier-pos   (if (and begin end)
+                                   (->> (concat
+                                          (when (not= begin 0)
+                                            [0 begin])
+                                          (holes other-deltas)
+                                          (when (not= end (count hcoll))
+                                            [end (count hcoll)]))
+                                        (partition 2))
+                                   [[0 (count hcoll)]])
+                quantifiers      (map first quantifier-sections)
+                quantifiers+pos  (map vector quantifiers quantifier-pos)
+                quantifier-delta (reduce (fn [m [k [begin end]]]
+                                           (assoc m k (subvec hcoll begin end)))
+                                         {}
+                                         quantifiers+pos)]
+            ;; Ensure that + quantifiers have at least 1 item!
+            (when (empty? (->> (filter (partial s/valid? ::cs/+) quantifiers)
+                               (map (partial get quantifier-delta))
+                               (filter nil?)))
+              (apply merge quantifier-delta other-deltas))))))))
 
 ;; TODO: tests
 ;; TODO: :source
@@ -324,9 +331,7 @@
                                     (filter (comp #(s/valid? ::cs/fragment %)
                                                   second))
                                     (first))]
-        ;; TODO: performance improvements, should only do initial 1-fragment search if before-cv contains no quantifiers
         ;; TODO: expand description, relationship with quantifiers
-        ;; TODO: support quantifier for after-hv content too
         ;; A fragment is essentially a special quantifier.
         (when-let [hit (-> (fragment-bindings fragment (subvec hv 2) :limit 1)
                            (first))]
@@ -358,18 +363,17 @@
                                              (:end (meta (last <>))))})})
                     {:skip [cv hv]}))))))
 
-        ;; TODO: multiple quantifiers should be allowed between non-quantifier segments
         ;; For a regular Cuphic vector:
         ;;   1) Either return a potential quantifier binding + other bindings.
         ;;   2) Otherwise, only return local bindings in tag and attr.
         ;;   3) If the nodes don't match, nil will bubble up and exit the loop.
-        (if-let [q (find-quantifier cv)]
+        (if (contains-quantifier? cv)
           (let [cv*   (subvec cv 0 2)
                 hv*   (subvec hv 0 2)
                 ccoll (subvec cv 2)
                 hcoll (subvec hv 2)]
             (when-let [tag+attr-delta (tag+attr-bindings cv* hv*)]
-              (when-let [quantifier-delta (quantifier-bindings q ccoll hcoll)]
+              (when-let [quantifier-delta (quantifier-bindings ccoll hcoll)]
                 (with-meta (merge tag+attr-delta quantifier-delta)
                            {:skip [cv hv]}))))
           (tag+attr-bindings cv hv))))
