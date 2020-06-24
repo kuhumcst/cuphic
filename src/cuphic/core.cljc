@@ -89,9 +89,7 @@
 
 (defn- find-quantifier
   [v]
-  (->> v
-       (filter (partial s/valid? ::cs/quantifier))
-       (single-or-nil)))
+  (single-or-nil (filter (partial s/valid? ::cs/quantifier) v)))
 
 ;; The presence of a quantifier means we're skipping the branch subtree in order
 ;; to preserve the parallel state of the zippers. The remaining child nodes must
@@ -149,62 +147,44 @@
            deltas)))
 
 (defn- quantifier-bindings
-  "Get the symbol->value mapping found when comparing a normalised Cuphic vector
-  `cv` and a normalised Hiccup vector `hv` when `cv` contains a `quantifier`.
-  Returns nil if the two vectors don't match.
+  "Get the symbol->value mapping found when comparing `ccoll` and `hcoll` when
+  `ccoll` contains a `quantifier`. Returns nil if the two vectors don't match.
 
   Note: quantifiers cannot replace tags as that would break Hiccup semantics.
   You may use [? *] instead to match any Hiccup tag."
-  [quantifier cv hv]
+  [quantifier ccoll hcoll]
   (cond
-    ;; TODO: spec check here? somewhere else?
-    (= (first cv) quantifier)
-    (throw (ex-info "tag cannot be a quantifier" cv))
-
     ;; Affixed items
-    (= (last cv) quantifier)
-    (let [cv*            (subvec cv 0 (dec (count cv)))
-          hv*            (subvec hv 0 (count cv*))
-          tag+attr-delta (tag+attr-bindings cv* hv*)
-          coll-delta     (coll-bindings (subvec cv* 2) (subvec hv* 2))]
-      (when (and tag+attr-delta coll-delta)
-        (let [quantified-items (subvec hv (min (count cv*)) (count hv))]
-          (quantifier-ret quantifier
-                          quantified-items
-                          tag+attr-delta
-                          coll-delta))))
+    (= (last ccoll) quantifier)
+    (let [ccoll*     (subvec ccoll 0 (dec (count ccoll)))
+          split-pos  (count ccoll*)
+          hcoll*     (subvec hcoll 0 split-pos)
+          coll-delta (coll-bindings ccoll* hcoll*)]
+      (when coll-delta
+        (quantifier-ret quantifier (subvec hcoll split-pos) coll-delta)))
 
     ;; Prefixed items
-    (= (get cv 2) quantifier)
-    (let [tag+attr-delta (tag+attr-bindings (subvec cv 0 2) (subvec hv 0 2))
-          ccoll          (subvec cv 3)
-          hcoll          (subvec hv (- (count hv) (count ccoll)))
-          coll-delta     (coll-bindings ccoll hcoll)]
-      (when (and tag+attr-delta coll-delta)
-        (let [quantified-items (subvec hv 2 (- (count hv) (count ccoll)))]
-          (quantifier-ret quantifier
-                          quantified-items
-                          tag+attr-delta
-                          coll-delta))))
+    (= (first ccoll) quantifier)
+    (let [ccoll*     (subvec ccoll 1)
+          split-pos  (- (count hcoll) (count ccoll*))
+          hcoll*     (subvec hcoll split-pos)
+          coll-delta (coll-bindings ccoll* hcoll*)]
+      (when coll-delta
+        (quantifier-ret quantifier (subvec hcoll 0 split-pos) coll-delta)))
 
     ;; Infixed items
     :else
-    (when (>= (count hv) (dec (count cv)))
-      (let [tag+attr-delta (tag+attr-bindings (subvec cv 0 2) (subvec hv 0 2))
-            [before after] (split-with (partial not= quantifier) (subvec cv 2))
-            mid            (+ (count before) 2)
-            mid-end        (- (count hv) (count (rest after)))
-            before-delta   (coll-bindings before
-                                          (subvec hv 2 mid))
-            after-delta    (coll-bindings (rest after)
-                                          (subvec hv mid-end))]
-        (when (and tag+attr-delta before-delta after-delta)
-          (let [quantified-items (subvec hv mid mid-end)]
-            (quantifier-ret quantifier
-                            quantified-items
-                            tag+attr-delta
-                            before-delta
-                            after-delta)))))))
+    (when (>= (count hcoll) (dec (count ccoll)))
+      (let [[before [_ & after]] (split-with #(not= quantifier %) ccoll)
+            mid          (count before)
+            mid-end      (- (count hcoll) (count after))
+            before-delta (coll-bindings before (subvec hcoll 0 mid))
+            after-delta  (coll-bindings after (subvec hcoll mid-end))]
+        (when (and before-delta after-delta)
+          (quantifier-ret quantifier
+                          (subvec hcoll mid mid-end)
+                          before-delta
+                          after-delta))))))
 
 (defn- section-search
   "Find the bindings of the first occurrence of fixed-length sequence `ccoll` in
@@ -323,24 +303,6 @@
           ;; An unsuccessful search will return the empty list of results.
           :else ret)))))
 
-(comment
-  ;; Fragments are returned as the symbol <> (not :<>) to make destructuring
-  ;; easy. The parent structure (and other higher-level substructures) can still
-  ;; capture variables. Only a single fragment is allowed for now.
-  {<>          [{+stuff [1 2 3]
-                 ?other "other"}]
-   ?parent-tag :p}
-  (section-search '[1 ?glen] [1 2 1 3 3 3 4 3 4 1 5] 2)
-  (meta (section-search '[1 ?glen] [1 2 1 3 3 3 4 3 4 1 5] 0))
-  (fragment-bindings '[:<> 1 ?num] [1 2 1 3 3 3 4 3 4 1 5])
-  (bindings '[? [:<> 1 ?num]] [:p 1 2 1 3 3 3 4 3 4 1 5])
-
-  (bindings '[? [:<> ?num 3]] [:p 1 2 1 3 3 3 4 3 4 1 5])
-  (bindings '[? [:<> 1 *any 3]] [:p 1 2 1 3 3 3 4 3 4 1 5])
-  (bindings '[? [:<> +any 3]] [:p 1 2 1 3 3 3 4 3 4 1 5])
-
-  #_.)
-
 (defn- bindings-delta
   "Get a delta of the local bindings as a map by comparing `cnode` to `hnode`.
   Will return nil if the two nodes do not match."
@@ -400,10 +362,16 @@
         ;; For a regular Cuphic vector:
         ;;   1) Either return a potential quantifier binding + other bindings.
         ;;   2) Otherwise, only return local bindings in tag and attr.
-        ;;   3) When the nodes don't match, nil will bubble up and exit the loop.
-        (if-let [quantifier (find-quantifier cv)]
-          (when-let [symbol->value (quantifier-bindings quantifier cv hv)]
-            (with-meta symbol->value {:skip [cv hv]}))
+        ;;   3) If the nodes don't match, nil will bubble up and exit the loop.
+        (if-let [q (find-quantifier cv)]
+          (let [cv*   (subvec cv 0 2)
+                hv*   (subvec hv 0 2)
+                ccoll (subvec cv 2)
+                hcoll (subvec hv 2)]
+            (when-let [tag+attr-delta (tag+attr-bindings cv* hv*)]
+              (when-let [quantifier-delta (quantifier-bindings q ccoll hcoll)]
+                (with-meta (merge tag+attr-delta quantifier-delta)
+                           {:skip [cv hv]}))))
           (tag+attr-bindings cv hv))))
 
     ;; Leafs (= content values) can be captured as bindings here.
