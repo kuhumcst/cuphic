@@ -234,5 +234,11 @@
       (is (= [:p 2 1 8 9 8 9]
              (cup/transform '[:p ?x ?y [:<> 1 2]]
                             '[:p ?y ?x [:<> 8 9]]
-                            [:p 1 2 1 2 1 2]))))))
+                            [:p 1 2 1 2 1 2])))))
 
+  (testing "quantifiers"
+    (testing "splicing"
+      (= [:p 7 8 9 "-" 1 2 3 "-" 4 5 6]
+         (cup/transform '[:p +begin "-" +middle "-" +end]
+                        '[:p +end "-" +begin "-" +middle]
+                        '[:p 1 2 3 "-" 4 5 6 "-" 7 8 9])))))

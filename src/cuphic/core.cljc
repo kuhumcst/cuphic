@@ -424,23 +424,24 @@
                                (reduce zip/insert-left loc)))]
     (zip/remove (reduce splice-fragment fragment-loc fragment-bindings))))
 
-;; TODO: need splicing for quantifiers too
 (defn apply-bindings
   "Apply `symbol->value` bindings to a piece of `cuphic`."
   [symbol->value cuphic]
   (loop [[node :as loc] (vector-map-zip cuphic)]
     (if (zip/end? loc)
       (zip/root loc)
-      (recur (zip/next (cond
-                         (symbol->value node)
-                         (zip/replace loc (symbol->value node))
+      (let [v (symbol->value node)]
+        (recur (zip/next (cond
+                           v
+                           (if (s/valid? ::cs/quantifier node)
+                             (zip/remove (reduce zip/insert-left loc v))
+                             (zip/replace loc v))
 
-                         (and (contains? symbol->value '<>)
-                              (vector? node)
-                              (= :<> (first node)))
-                         (splice-fragments loc (get symbol->value '<>))
+                           (and (s/valid? ::cs/fragment node)
+                                (contains? symbol->value '<>))
+                           (splice-fragments loc (get symbol->value '<>))
 
-                         :else loc))))))
+                           :else loc)))))))
 
 (defn transform
   "Transform hiccup using cuphic from/to templates.
