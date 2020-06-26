@@ -14,7 +14,6 @@
                                                       Insertion])))
 
 ;; Some of the lower-leel binding fns require recursive calls to the parent fns.
-(declare bindings)
 (declare bindings-delta)
 
 (defn- hicv
@@ -23,6 +22,12 @@
   (if (map? (second v))
     v
     (into [(first v) {}] (rest v))))
+
+(defn- ->nodes
+  [v]
+  (if (map? (second v))
+    (subvec v 2)
+    (subvec v 1)))
 
 ;; TODO: replace brittle deep-diff2, sometimes different diffs in clj vs. cljs
 (defn- attr-bindings
@@ -59,22 +64,21 @@
   "Get the symbol->value mapping found when comparing only tags and attrs of a
   normalised Cuphic vector `cv` and a normalised Hiccup vector `hv`.
   Returns nil if the two vectors don't match."
-  [[ctag cattr :as cv] [htag hattr :as hv]]
-  (when (= (count cv) (count hv))
-    (cond
-      ;; If the tags match, we can rely on checking attr bindings.
-      (= ctag htag)
-      (attr-bindings cattr hattr)
+  [[ctag cattr] [htag hattr]]
+  (cond
+    ;; If the tags match, we can rely on checking attr bindings.
+    (= ctag htag)
+    (attr-bindings cattr hattr)
 
-      ;; Otherwise, the Cuphic tag can only be a single-value placeholder,
-      ;; keeping in mind that quantifiers are dealt with elsewhere.
-      (s/valid? ::cs/? ctag)
-      (merge
-        (when (s/valid? ::cs/? ctag)
-          {ctag htag})
-        (attr-bindings cattr hattr)))))
+    ;; Otherwise, the Cuphic tag can only be a single-value placeholder,
+    ;; keeping in mind that quantifiers are dealt with elsewhere.
+    (s/valid? ::cs/? ctag)
+    (merge
+      (when (s/valid? ::cs/? ctag)
+        {ctag htag})
+      (attr-bindings cattr hattr))))
 
-(defn- coll-bindings
+(defn- fixed-bindings
   "Get the symbol->value mapping found comparing two sequential collections.
   This function is used to scoop up bindings that would otherwise be skipped
   if a quantifier is present.
@@ -91,92 +95,153 @@
           ret)))))
 
 (defn- section-search
-  "Find the bindings of the first occurrence of fixed-length sequence `ccoll` in
-  `nodes` starting the search at the `begin` index. As an aid to the caller, the
-  indices of the matching subsection are attached as metadata."
-  [ccoll nodes begin]
-  (let [section-size (count ccoll)
-        end          (- (count nodes) section-size)]
-    (loop [i begin]
-      (when (<= i end)
-        (let [section-end (+ i section-size)
-              candidate   (subvec nodes i section-end)]
-          (if-let [delta (coll-bindings ccoll candidate)]
-            (with-meta delta {:begin i
-                              :end   section-end})
-            (recur (inc i))))))))
+  "Find the bindings of the first occurrence of fixed-length sequence `cnodes`
+  in `hnodes` starting the search at the `begin` index. As an aid to the caller,
+  the indices of the matching subsection are attached as metadata."
+  [cnodes hnodes begin]
+  (when (not (empty? cnodes))
+    (let [section-size (count cnodes)
+          end          (- (count hnodes) section-size)]
+      (loop [i begin]
+        (when (<= i end)
+          (let [section-end (+ i section-size)
+                candidate   (subvec hnodes i section-end)]
+            (if-let [delta (fixed-bindings cnodes candidate)]
+              (with-meta delta {:begin i
+                                :end   section-end})
+              (recur (inc i)))))))))
 
-(defn- section-bindings
-  [sections nodes]
-  (loop [[section & sections*] sections
-         begin 0
-         ret   []]
-    (if section
-      (when-let [hit (section-search section nodes begin)]
-        (recur sections* (:end (meta hit)) (conj ret hit)))
-      ret)))
+(def quantifier?
+  (partial s/valid? ::cs/quantifier))
 
-(defn- holes
-  "Get the holes between a collection of `section-deltas`."
-  [section-deltas]
-  (let [delta->begin+end (fn [delta]
-                           (let [{:keys [begin end]} (meta delta)]
-                             [begin end]))
-        begin+ends       (mapcat delta->begin+end section-deltas)]
-    (butlast (rest begin+ends))))
+(defn- direct-bindings
+  "Return 1:1 bindings between `pattern` and `nodes` as kvs."
+  [pattern nodes]
+  (when (= (count pattern) (count nodes))
+    (reduce (fn [kvs [k v :as kv]]
+              (cond
+                (= k v) kvs
+                (symbol? k) (conj kvs kv)
+                (vector? v) (apply conj kvs (bindings-delta k v))
+                :else (reduced nil)))
+            []
+            (map vector pattern nodes))))
 
-(defn- not-adjacent
-  "Return `coll` if no adjacent values satisfy `pred`."
-  [pred coll]
-  (reduce (fn [xs x]
-            (if (and (pred x)
-                     (pred (peek xs)))
-              (reduced nil)
-              (conj xs x)))
-          (empty coll)
-          coll))
+(defn- not-fragment?
+  [x]
+  (not (s/valid? ::cs/fragment x)))
 
-(defn- quantifier-bindings
-  "Get the symbol->value mapping found when comparing `ccoll` and `hcoll` when
-  `ccoll` contains a `quantifier`. Returns nil if the two vectors don't match."
-  [ccoll hcoll]
-  (when (not-adjacent symbol? ccoll)
-    (let [quantifier?         (partial s/valid? ::cs/quantifier)
-          all-sections        (partition-by quantifier? ccoll)
-          quantifier-sections (filter (comp quantifier? first) all-sections)
-          other-sections      (remove (comp quantifier? first) all-sections)]
-      (when (every? #(= (count %) 1) quantifier-sections)
-        (when-let [other-deltas (section-bindings other-sections hcoll)]
-          (let [begin            (:begin (meta (first other-deltas)))
-                end              (:end (meta (last other-deltas)))
-                quantifier-pos   (if (and begin end)
-                                   (->> (concat
-                                          (when (not= begin 0)
-                                            [0 begin])
-                                          (holes other-deltas)
-                                          (when (not= end (count hcoll))
-                                            [end (count hcoll)]))
-                                        (partition 2))
-                                   [[0 (count hcoll)]])
-                quantifiers      (map first quantifier-sections)
-                quantifiers+pos  (map vector quantifiers quantifier-pos)
-                quantifier-delta (reduce (fn [m [k [begin end]]]
-                                           (assoc m k (subvec hcoll begin end)))
-                                         {}
-                                         quantifiers+pos)]
-            ;; Ensure that + quantifiers have at least 1 item!
-            (when (empty? (->> (filter (partial s/valid? ::cs/+) quantifiers)
-                               (map (partial get quantifier-delta))
-                               (filter nil?)))
-              (apply merge quantifier-delta other-deltas))))))))
+(defn capture-pattern
+  "Create a capture pattern from a sequence of `cnodes`. Returns the input data
+  structure with relevant metadata attached, or nil if invalid."
+  [cnodes]
+  (let [parts            (partition-by quantifier? cnodes)
+        quantifiers      (filter (comp quantifier? first) parts)
+        quantifier-count (count quantifiers)
+        min-count        (fn []
+                           (if (s/valid? ::cs/+ (ffirst quantifiers))
+                             (count cnodes)
+                             (dec (count cnodes))))]
+    (cond
+      (> quantifier-count 1)
+      nil
+
+      (= quantifier-count 0)
+      (with-meta cnodes {:min-count (count cnodes)})
+
+      (quantifier? (first cnodes))
+      (with-meta cnodes {:quantifier :prefix
+                         :parts      parts
+                         :min-count  (min-count)})
+
+      (quantifier? (last cnodes))
+      (with-meta cnodes {:quantifier :affix
+                         :parts      parts
+                         :min-count  (min-count)})
+
+      :else
+      (with-meta cnodes {:quantifier :infix
+                         :parts      parts
+                         :min-count  (min-count)}))))
+
+(defn ->patterns
+  "Partition a list of `cnodes` into a list of capture patterns."
+  [cnodes]
+  (->> (partition-by symbol? cnodes)
+       (map capture-pattern)))
+
+(defn- min-capture
+  "Return the aggregate min-count of a list of `capture-patterns`."
+  [capture-patterns]
+  (reduce + (map (comp :min-count meta) capture-patterns)))
+
+(defn- pattern-bindings
+  "Given a list of cnodes partitioned into `capture-patterns`, return the
+  bindings found in `hnodes`."
+  [capture-patterns hnodes]
+  (loop [ret    {}
+         hnodes hnodes
+         [pattern & [next-pattern :as patterns]] capture-patterns]
+    (let [{:keys [quantifier parts min-count]} (meta pattern)
+          nodes-until (fn [cnodes hnodes begin]
+                        (let [hit (section-search cnodes hnodes begin)]
+                          (subvec hnodes 0 (or (:begin (meta hit))
+                                               (count hnodes)))))
+          min-nodes?  (fn [quantifier nodes]
+                        (not (and (= 0 (count nodes))
+                                  (s/valid? ::cs/+ quantifier))))]
+      (if pattern
+        (when (<= min-count (count hnodes))
+          (case quantifier
+            ;; With no quantifier, we simply capture the direct bindings.
+            nil (let [bound   (subvec hnodes 0 min-count)
+                      unbound (subvec hnodes min-count)
+                      ret*    (into ret (direct-bindings pattern bound))]
+                  (recur ret* unbound patterns))
+
+            :prefix (let [[[quantifier] after] parts
+                          bound   (nodes-until next-pattern hnodes min-count)
+                          unbound (subvec hnodes (count bound))
+                          split   (- (count bound) (count after))
+                          qnodes  (subvec bound 0 split)
+                          anodes  (subvec bound split)
+                          kvs     (concat (direct-bindings after anodes)
+                                          {quantifier qnodes})]
+                      (when (min-nodes? quantifier qnodes)
+                        (recur (apply merge ret kvs) unbound patterns)))
+
+            :affix (let [[before [quantifier]] parts
+                         bound   (nodes-until next-pattern hnodes min-count)
+                         unbound (subvec hnodes (count bound))
+                         split   (count before)
+                         bnodes  (subvec bound 0 split)
+                         qnodes  (subvec bound split)
+                         kvs     (concat (direct-bindings before bnodes)
+                                         {quantifier qnodes})]
+                     (when (min-nodes? quantifier qnodes)
+                       (recur (apply merge ret kvs) unbound patterns)))
+
+            :infix (let [[before [quantifier] after] parts
+                         bound   (nodes-until next-pattern hnodes min-count)
+                         unbound (subvec hnodes (count bound))
+                         split-1 (count before)
+                         split-2 (- (count bound) (count after))
+                         bnodes  (subvec bound 0 split-1)
+                         anodes  (subvec bound split-2)
+                         qnodes  (subvec bound split-1 split-2)
+                         kvs     (concat (direct-bindings before bnodes)
+                                         (direct-bindings after anodes)
+                                         {quantifier qnodes})]
+                     (when (min-nodes? quantifier qnodes)
+                       (recur (apply merge ret kvs) unbound patterns)))))
+        ret))))
 
 ;; TODO: tests
 ;; TODO: :source
-;; TODO: equivalent to-cuphic tranformation using fragments
 (defn- fragment-bindings
   "Given a `fragment` Cuphic vector and a sequence of `nodes`, return a sequence
   of bindings for matching sections."
-  [fragment nodes & {:keys [limit] :as opts}]
+  [fragment nodes & {:keys [limit begin end] :as opts}]
   (let [!quantifier (complement (partial s/valid? ::cs/quantifier))
         ccoll       (if (map? (second fragment))
                       (subvec fragment 2)
@@ -187,10 +252,14 @@
                        (count after)
                        (if (s/valid? ::cs/+ quantifier) 1 0))]
     (when (>= (count nodes) min-size)                       ; For performance
-      (loop [i      0
+      (loop [i      (or begin 0)
              search {}
              ret    []]
         (cond
+          ;; Optional early return when a set end has been reached.
+          (> i end)
+          ret
+
           ;; Optional early return when a result limit has been set.
           (= (count ret) limit)
           ret
@@ -238,11 +307,13 @@
           quantifier
           (let [between-begin (or (:end (meta (:before search)))
                                   (:end (meta (last ret)))
-                                  0)
+                                  begin)
                 between-end   (or (:begin (meta (:after search)))
                                   (:begin (meta (:recur search)))
                                   (count nodes))
-                between       (subvec nodes between-begin between-end)
+                between       (if (< between-begin between-end)
+                                (subvec nodes between-begin between-end)
+                                [])
                 ret*          (when (not (and (empty? between)
                                               (s/valid? ::cs/+ quantifier)))
                                 (let [section {:begin (- between-begin
@@ -283,61 +354,53 @@
     ;; Branches (= Hiccup vectors) can be captured here.
     (and (vector? cnode)
          (vector? hnode))
-    (let [cv (hicv cnode)
-          hv (hicv hnode)]
-      ;; Fragments are a special case with handling similar to the * quantifier.
-      ;; If tag and attr match, the children will be scanned for the fragment.
-      ;; Note: assumes that `[:<> ...]` has been coerced to `[? [:<> ...]]`.
-      (if-let [[cv-n fragment] (->> (map-indexed vector cv)
-                                    (filter (comp #(s/valid? ::cs/fragment %)
-                                                  second))
-                                    (first))]
-        ;; TODO: expand description, relationship with quantifiers
-        ;; A fragment is essentially a special quantifier.
-        (when-let [hit (-> (fragment-bindings fragment (subvec hv 2) :limit 1)
-                           (first))]
-          (let [before-cv    (subvec cv 0 cv-n)
-                after-cv     (subvec cv (min (inc cv-n) (count cv)))
-                hv-n         (+ 2 (:begin (meta hit)))
-                fragment-pos (max cv-n hv-n)
-                before-hv    (subvec hv 0 fragment-pos)
-                ;; TODO: clarify between-end
-                between-end  (min (max (- (count hv)
-                                          (count after-cv))
-                                       0)
-                                  (count hv))
-                between-hv   (subvec hv fragment-pos between-end)
-                after-hv     (subvec hv between-end)]
-            ;; TODO: what about matching 0 fragments?
-            (when-let [before-delta (bindings before-cv before-hv)]
-              (when-let [after-delta (coll-bindings after-cv after-hv)]
-                (when-let [<> (-> (fragment-bindings fragment between-hv)
-                                  (not-empty))]
-                  (with-meta
-                    (merge before-delta
-                           after-delta
-                           {'<> (with-meta
-                                  <>
-                                  {:begin (+ fragment-pos
-                                             (:begin (meta (first <>))))
-                                   :end   (+ fragment-pos
-                                             (:end (meta (last <>))))})})
-                    {:skip [cv hv]}))))))
+    (let [cv     (hicv cnode)
+          hv     (hicv hnode)
+          cnodes (subvec cv 2)
+          hnodes (subvec hv 2)]
+      (when-let [tag+attr-delta (tag+attr-bindings (subvec cv 0 2)
+                                                   (subvec hv 0 2))]
+        ;; Fragments are bounded by segments on either side.
+        (let [[before [fragment & after]] (split-with not-fragment? cnodes)]
+          (if fragment
+            (let [bpatterns      (not-empty (->patterns before))
+                  apatterns      (not-empty (->patterns after))
+                  fnodes         (->nodes fragment)
+                  fragment-count (min-capture (->patterns fnodes))
+                  before-count   (min-capture bpatterns)
+                  after-count    (min-capture apatterns)
+                  max-count      (count hnodes)]
+              ;; As a performance optimisation, only proceed if hnodes fits the
+              ;; min-length requirements.
+              (when (<= (+ before-count after-count fragment-count)
+                        max-count)
+                ;; Fragment search is greedy within the bounded context.
+                (let [<> (fragment-bindings fragment hnodes
+                                            :begin before-count
+                                            :end (- max-count after-count))]
+                  (when (not-empty <>)
+                    (let [split-1 (:begin (meta (first <>)))
+                          split-2 (:end (meta (last <>)))
+                          bnodes  (subvec hnodes 0 split-1)
+                          anodes  (subvec hnodes split-2)]
+                      (when-let [bdelta (if bpatterns
+                                          (pattern-bindings bpatterns bnodes)
+                                          {})]
+                        (when-let [adelta (if apatterns
+                                            (pattern-bindings apatterns anodes)
+                                            {})]
+                          (let [qdelta {'<> (with-meta <>
+                                                       {:begin (+ 2 split-1)
+                                                        :end   (+ 2 split-2)})}]
+                            (with-meta (merge tag+attr-delta
+                                              bdelta
+                                              adelta
+                                              qdelta)
+                                       {:skip [cv hv]})))))))))
 
-        ;; For a regular Cuphic vector:
-        ;;   1) Either return a potential quantifier binding + other bindings.
-        ;;   2) Otherwise, only return local bindings in tag and attr.
-        ;;   3) If the nodes don't match, nil will bubble up and exit the loop.
-        (if (seq (filter (partial s/valid? ::cs/quantifier) cv))
-          (let [cv*   (subvec cv 0 2)
-                hv*   (subvec hv 0 2)
-                ccoll (subvec cv 2)
-                hcoll (subvec hv 2)]
-            (when-let [tag+attr-delta (tag+attr-bindings cv* hv*)]
-              (when-let [quantifier-delta (quantifier-bindings ccoll hcoll)]
-                (with-meta (merge tag+attr-delta quantifier-delta)
-                           {:skip [cv hv]}))))
-          (tag+attr-bindings cv hv))))
+            (when-let [delta (pattern-bindings (->patterns cnodes) hnodes)]
+              (with-meta (merge tag+attr-delta delta)
+                         {:skip [cv hv]}))))))
 
     ;; Leafs (= content values) can be captured as bindings here.
     (s/valid? ::cs/? cnode)
@@ -376,15 +439,18 @@
   (when (bindings cuphic hiccup)
     hiccup))
 
-(defn- splice-fragments
-  "Given a `fragment-loc` and a sequence of `fragment-bindings`, replace the
-  loc with multiple fragments with individual bindings applied."
-  [[node :as fragment-loc] fragment-bindings]
-  (let [fragment-parts  (subvec (hicv node) 2)
-        splice-fragment (fn [loc symbol->value]
-                          (->> (map #(get symbol->value % %) fragment-parts)
-                               (reduce zip/insert-left loc)))]
-    (zip/remove (reduce splice-fragment fragment-loc fragment-bindings))))
+(defn- fragment-replace
+  "Given a `loc` and a sequence of `fragment-bindings`, replace the loc with
+  multiple fragments with individual bindings applied."
+  [[node :as loc] fragment-bindings]
+  (let [parts             (subvec (hicv node) 2)
+        bindings->section (fn [symbol->value]
+                            (mapcat (fn [x]
+                                      (if (s/valid? ::cs/quantifier x)
+                                        (symbol->value x)
+                                        [(symbol->value x x)])) parts))
+        replacements      (mapcat bindings->section fragment-bindings)]
+    (czip/multi-replace loc replacements)))
 
 (defn apply-bindings
   "Apply `symbol->value` bindings to a piece of `cuphic`."
@@ -392,16 +458,16 @@
   (loop [[node :as loc] (czip/vector-map-zip cuphic)]
     (if (zip/end? loc)
       (zip/root loc)
-      (let [v (symbol->value node)]
+      (let [replacement (symbol->value node)]
         (recur (zip/next (cond
-                           v
+                           replacement
                            (if (s/valid? ::cs/quantifier node)
-                             (zip/remove (reduce zip/insert-left loc v))
-                             (zip/replace loc v))
+                             (czip/multi-replace loc replacement)
+                             (zip/replace loc replacement))
 
                            (and (s/valid? ::cs/fragment node)
                                 (contains? symbol->value '<>))
-                           (splice-fragments loc (get symbol->value '<>))
+                           (fragment-replace loc (get symbol->value '<>))
 
                            :else loc)))))))
 

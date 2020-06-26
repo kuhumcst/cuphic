@@ -22,3 +22,8 @@
     (zip/right loc) (zip/right loc)
     (zip/up loc) (recur (zip/up loc))
     :else (assoc loc 1 :end)))
+
+(defn multi-replace
+  "Replace `loc` with `nodes`."
+  [loc nodes]
+  (zip/remove (reduce zip/insert-left loc nodes)))

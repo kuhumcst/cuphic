@@ -11,12 +11,15 @@ Cuphic is essentially a superset of Hiccup where certain symbols have a special 
 * `?` - a single-value placeholder.
 * `*` - a multi-value placeholder (0 or more).
 * `+` - a multi-value placeholder (1 or more).
+* `[:<> ...]` - a fragment (repeating pattern among child nodes, 1 or more). This syntax is inspired by [Reagent's](https://github.com/reagent-project/reagent) version of React fragments.
 
 Used on their own, they will stand in for a mix of values when doing comparisons between Hiccup and Cuphic. However, they can also be used as _prefixes_ for named values that may be captured or inserted using Cuphic, e.g. `?tag`, `*content`, `+items`.
 
-Cuphic _looks_ like Hiccup and can _only_ transform Hiccup, but in return respects the set of assumptions that come with looking like Hiccup, e.g. treating attribute maps as optional. Cuphic data can be conformed with [clojure.spec](https://clojure.org/about/spec) and spec validation is also performed sporadically as part of the core algorithm.
+Note that currently only a _single_ fragment may exist within a piece of Cuphic. The captured fragment section bindings always map to the symbol `<>` in the resulting bindings map.
 
 ---
+
+Cuphic _looks_ like Hiccup and can _only_ transform Hiccup, but in return respects the set of assumptions that come with looking like Hiccup, e.g. treating attribute maps as optional. Cuphic data can be conformed with [clojure.spec](https://clojure.org/about/spec) and spec validation is also performed sporadically as part of the core algorithm.
 
 The Cuphic library is based on two primary functions:
 
@@ -105,14 +108,60 @@ More examples
 -------------
 _TODO: expand this section, e.g. `matches`, `rewrite` when it's more stable, `...` when it's done, `select` when it's been converted._
 
-Miscellaneous 
--------------
+Architecture and design
+-----------------------
+This section contains relevant documentation pertaining to the architecture and design of Cuphic.
+
+### Capturing bindings
+When capturing bound values among child nodes, a certain order of operations is observed.
+
+| Order of operations |
+|---------------------|
+| `[:<> ...]`         |
+| `?` and `"text"`    |
+| `*` and `+`         |
+
+
+Before any other matching/capturing can occur, the node head itself - its HTML tag and attr - will be matched against the head of the Cuphic and its values potentially captured. This constant time check is the primary way Cuphic can stay somewhat performant. Only when that check is successful will the algorithm move on to the child nodes.
+
+Within the child nodes, instances of any available fragment (`[:<> ...]`) will be located and captured. This is be done in approximately `O(n+m)` time where `m` is the size of the fragment itself and `n` is the amount of child nodes. Note that there can only be a single fragment among the child nodes!
+
+The remaining nodes to either side of the captured fragment section are then handled separately. The nodes are sequentially matched against alternating fixed-length and quantifier patterns. The quantifier patterns feature some lookahead as they need to capture all the way until the appearance of the next fixed-length pattern.
+ 
+ ```clojure
+;; Values lined up with their capturing symbols. 
+(bindings '[:p  ?x   *between   ?y   [:<> 0 ?a ?b]   +remainder]
+            [:p  1,   2 3 4 5,   6,   0 1 2  0 1 2,   7 8 9     ])
+
+;;=> {?x 1, *between [2 3 4 5], ?y 6, <> [{?a 1, ?b 2} {?a 1, ?b 2}], +remainder [7 8 9]}
+```
+
+Performant Cuphic should be written to be as specific as possible with the outer head (tag and attr) serving as the primary way of limiting scope, thereby improving performance.
+
+#### Dealing with ambiguity
+For the bindings extraction algorithm to work best, there must be little ambiguity in the Cuphic.
+
+```clojure
+(bindings '[?tag ?y +middle [:<> ?x]]
+           [:div 1 2 3 4 5])
+
+;;=> {?tag :div, ?y 1, +middle [2], <> [{?x 3} {?x 4} {?x 5}]}
+```
+
+In somes cases there is no clear boundary between the different values.
+
+1. The algorithm determines the fragment boundary is by calculating a `min-count` for the sections on either side of the fragment. This creates a bounded context for the fragment nodes.
+2. The algorithm will then try to find repeated instances of the fragment pattern, capturing every single child node inside this bounded context.
+3. Finally, the remaining nodes outside the fragment context are matched/captured by the other parts of the Cuphic vector.
+
 ### Use of zippers
-Zippers appear in two separate places in Cuphic:
+Zippers are used for two separate purposes in Cuphic:
 
 * As part of the `rewrite` function where a **single** pass through a Hiccup tree is used to compare every single node to the given list of transformers, inserting changes into the tree when applicable.
 * As part of the `bindings` function where **two** zippers are traversed in **parallel**, comparing each individual part of the Hiccup to the Cuphic. This allows for an early break out of the loop once the Hiccup doesn't match.
 
+Miscellaneous 
+-------------
 ### Why not Meander?
 After researching various alternatives, I first started using [Meander](https://github.com/noprompt/meander) for doing `hiccup->hiccup` data transformations in my other project, [rescope](https://github.com/kuhumcst/rescope).
 
