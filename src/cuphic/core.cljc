@@ -3,46 +3,26 @@
   (:require [clojure.spec.alpha :as s]
             [clojure.zip :as zip]
             [hickory.zip :as hzip]
-            [cuphic.spec :as cs]
             [lambdaisland.deep-diff2 :as dd]
             #?(:cljs [lambdaisland.deep-diff2.diff-impl :refer [Mismatch
                                                                 Deletion
-                                                                Insertion]]))
+                                                                Insertion]])
+            [cuphic.spec :as cs]
+            [cuphic.zip :as czip])
   #?(:clj (:import [lambdaisland.deep_diff2.diff_impl Mismatch
                                                       Deletion
                                                       Insertion])))
 
-(defn vector-map-zip
-  "Also zips maps in addition to zipping vectors. Intentionally skips records."
-  [root]
-  (zip/zipper (some-fn vector?                              ; branch?
-                       (every-pred map? (complement record?)))
-              seq                                           ; children
-              (fn [node children]                           ; make-node
-                (if (vector? node)
-                  (with-meta (into [] children) (meta node))
-                  (with-meta (into {} children) (meta node))))
-              root))
+;; Some of the lower-leel binding fns require recursive calls to the parent fns.
+(declare bindings)
+(declare bindings-delta)
 
-;; https://groups.google.com/d/msg/clojure/FIJ5Pe-3PFM/JpYDQ2ejBgAJ
-(defn skip-subtree
-  "Fast-forward a zipper to skip the subtree at `loc`."
-  [[node _ :as loc]]
-  (cond
-    (zip/end? loc) loc
-    (zip/right loc) (zip/right loc)
-    (zip/up loc) (recur (zip/up loc))
-    :else (assoc loc 1 :end)))
-
-(defn- skip-siblings
-  "Skip the sibling nodes of the node at `loc`."
-  [[node _ :as loc]]
-  (or (zip/right loc) (zip/rightmost loc)))
-
-;; TODO: unnecessary? remove?
-;; Check if a keyword Insertion is inside a map.
-(def ^:private loc-in-map?
-  (comp map? zip/node zip/up zip/up))
+(defn- hicv
+  "Helper function for normalised destructuring of a hiccup-vector `v`."
+  [v]
+  (if (map? (second v))
+    v
+    (into [(first v) {}] (rest v))))
 
 ;; TODO: replace brittle deep-diff2, sometimes different diffs in clj vs. cljs
 (defn- attr-bindings
@@ -50,7 +30,7 @@
   Returns nil if the two attrs don't match."
   [cattr hattr]
   (let [diffs (dd/diff cattr hattr)]
-    (loop [loc (vector-map-zip diffs)
+    (loop [loc (czip/vector-map-zip diffs)
            ret {}]
       (if (zip/end? loc)
         ret
@@ -62,7 +42,8 @@
             ;; Insertions are problematic unless they are HTML attributes.
             Insertion
             (when (and (keyword? +)
-                       (loc-in-map? loc))
+                       ;; Check if a keyword Insertion is inside a map.
+                       (map? (zip/node (zip/up (zip/up loc)))))
               (recur (zip/next loc) ret))
 
             ;; Mismatches can indicate matching logic variables.
@@ -74,24 +55,24 @@
 
             (recur (zip/next loc) ret)))))))
 
-(defn- hicv
-  "Helper function for normalised destructuring of a hiccup-vector `v`."
-  [v]
-  (if (map? (second v))
-    v
-    (into [(first v) {}] (rest v))))
+(defn- tag+attr-bindings
+  "Get the symbol->value mapping found when comparing only tags and attrs of a
+  normalised Cuphic vector `cv` and a normalised Hiccup vector `hv`.
+  Returns nil if the two vectors don't match."
+  [[ctag cattr :as cv] [htag hattr :as hv]]
+  (when (= (count cv) (count hv))
+    (cond
+      ;; If the tags match, we can rely on checking attr bindings.
+      (= ctag htag)
+      (attr-bindings cattr hattr)
 
-(defn- contains-quantifier?
-  [v]
-  (seq (filter (partial s/valid? ::cs/quantifier) v)))
-
-;; The presence of a quantifier means we're skipping the branch subtree in order
-;; to preserve the parallel state of the zippers. The remaining child nodes must
-;; still be checked for bindings. This is what coll-bindings accomplishes by
-;; calling bindings-delta on every child node not captured by the quantifier.
-;; The fragment-bindings special case also requires this for the same reason.
-(declare bindings)
-(declare bindings-delta)
+      ;; Otherwise, the Cuphic tag can only be a single-value placeholder,
+      ;; keeping in mind that quantifiers are dealt with elsewhere.
+      (s/valid? ::cs/? ctag)
+      (merge
+        (when (s/valid? ::cs/? ctag)
+          {ctag htag})
+        (attr-bindings cattr hattr)))))
 
 (defn- coll-bindings
   "Get the symbol->value mapping found comparing two sequential collections.
@@ -109,26 +90,6 @@
         (when (and (empty? ccoll) (empty? hcoll))
           ret)))))
 
-(defn- tag+attr-bindings
-  "Get the symbol->value mapping found when comparing only tags and attrs of a
-  normalised Cuphic vector `cv` and a normalised Hiccup vector `hv`.
-  Returns nil if the two vectors don't match."
-  [[ctag cattr :as cv] [htag hattr :as hv]]
-  (when (= (count cv)
-           (count hv))
-    (cond
-      ;; If the tags match, we can rely on checking attr bindings.
-      (= ctag htag)
-      (attr-bindings cattr hattr)
-
-      ;; Otherwise, the Cuphic tag can only be a single-value placeholder,
-      ;; keeping in mind that quantifiers are dealt with elsewhere.
-      (s/valid? ::cs/? ctag)
-      (merge
-        (when (s/valid? ::cs/? ctag)
-          {ctag htag})
-        (attr-bindings cattr hattr)))))
-
 (defn- section-search
   "Find the bindings of the first occurrence of fixed-length sequence `ccoll` in
   `nodes` starting the search at the `begin` index. As an aid to the caller, the
@@ -145,15 +106,6 @@
                               :end   section-end})
             (recur (inc i))))))))
 
-(defn- holes
-  "Get the holes between a collection of `section-deltas`."
-  [section-deltas]
-  (let [delta->begin+end (fn [delta]
-                           (let [{:keys [begin end]} (meta delta)]
-                             [begin end]))
-        begin+ends       (mapcat delta->begin+end section-deltas)]
-    (butlast (rest begin+ends))))
-
 (defn- section-bindings
   [sections nodes]
   (loop [[section & sections*] sections
@@ -164,14 +116,23 @@
         (recur sections* (:end (meta hit)) (conj ret hit)))
       ret)))
 
+(defn- holes
+  "Get the holes between a collection of `section-deltas`."
+  [section-deltas]
+  (let [delta->begin+end (fn [delta]
+                           (let [{:keys [begin end]} (meta delta)]
+                             [begin end]))
+        begin+ends       (mapcat delta->begin+end section-deltas)]
+    (butlast (rest begin+ends))))
+
 (defn- not-adjacent
   "Return `coll` if no adjacent values satisfy `pred`."
   [pred coll]
-  (reduce (fn [coll val]
-            (if (and (pred val)
-                     (pred (peek coll)))
+  (reduce (fn [xs x]
+            (if (and (pred x)
+                     (pred (peek xs)))
               (reduced nil)
-              (conj coll val)))
+              (conj xs x)))
           (empty coll)
           coll))
 
@@ -367,7 +328,7 @@
         ;;   1) Either return a potential quantifier binding + other bindings.
         ;;   2) Otherwise, only return local bindings in tag and attr.
         ;;   3) If the nodes don't match, nil will bubble up and exit the loop.
-        (if (contains-quantifier? cv)
+        (if (seq (filter (partial s/valid? ::cs/quantifier) cv))
           (let [cv*   (subvec cv 0 2)
                 hv*   (subvec hv 0 2)
                 ccoll (subvec cv 2)
@@ -404,7 +365,8 @@
         ;; skip subtrees, although this could also be accomplished by looking at
         ;; the delta itself.
         (let [[cloc* hloc*] (if (:skip (meta delta))
-                              [(skip-subtree cloc) (skip-subtree hloc)]
+                              [(czip/skip-subtree cloc)
+                               (czip/skip-subtree hloc)]
                               [cloc hloc])]
           (recur (zip/next cloc*) (zip/next hloc*) (merge ret delta)))))))
 
@@ -427,7 +389,7 @@
 (defn apply-bindings
   "Apply `symbol->value` bindings to a piece of `cuphic`."
   [symbol->value cuphic]
-  (loop [[node :as loc] (vector-map-zip cuphic)]
+  (loop [[node :as loc] (czip/vector-map-zip cuphic)]
     (if (zip/end? loc)
       (zip/root loc)
       (let [v (symbol->value node)]
