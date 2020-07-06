@@ -24,7 +24,7 @@
   "Get a :ref fn for a DOM element to render a given `comp` as its shadow root.
   The component should accept a single argument: the element's DOM reference."
   [comp]
-  (fn [this]
+  (fn [^js/Element this]
     (when this
       ;; TODO: this extra check was suddenly necessary - investigate
       (when (undefined? (.-shadow this))
