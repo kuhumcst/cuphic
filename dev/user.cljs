@@ -4,6 +4,7 @@
             [reagent.dom :as rdom]
             [meander.epsilon :as m]
             [cuphic.core :as cup]
+            [recap.widgets.carousel :as carousel]
             [rescope.helpers :as helpers]
             [rescope.formats.xml :as xml]
             [rescope.select :as select]
@@ -19,14 +20,16 @@
 (def css-example
   (resource/inline "examples/css/tei.css"))
 
-(def da-type
-  {"conference" "Konference"
-   "org"        "Organisation"
-   "pers"       "Person"
-   "place"      "Sted"
-   "publ"       "Publikation"
-   "receiver"   "Modtager"
-   "sender"     "Afsender"})
+(defn da-type
+  [type]
+  (let [type->s {"conference" "denne konference"
+                 "org"        "denne organisation"
+                 "pers"       "denne person"
+                 "place"      "dette sted"
+                 "publ"       "denne publikation"
+                 "receiver"   "denne modtager"
+                 "sender"     "denne afsender"}]
+    (str "Vis mere om " (type->s type "dette"))))
 
 (defn meander-transformer
   [x]
@@ -43,6 +46,7 @@
     [:a {:href  ?ref
          :title (m/app da-type ?type)}
      [:slot]]))
+
 (def list-as-ul
   (cup/transformer
     :from '[:list +items]
@@ -61,6 +65,8 @@
                  :title (da-type ?type)}
              [:slot]]))))
 
+;; In order to represent pbs as slides in a carousel their boundaries must be
+;; made explicit in the HTML structure.
 (def wrap-pbs
   (cup/transformer
     :from '[:div * [:<> [:pb] +]]
@@ -71,16 +77,18 @@
                          [(into [:slides] (->> (subvec source begin end)
                                                (partition-by #(= :pb (first %)))
                                                (partition 2)
-                                               (map (partial apply concat))
                                                (map #(into [:slide] %))))]
                          (subvec source end)))))))
 
+;; TODO: no CSS applied due to shadow root - how to fix?
+;; TODO: illegal HTML tags since HTML displayed in shadow root come directly from captured bindings
+;; TODO: React key warnings, forced div use (fix in recap)
 (def carousel-pbs
   (cup/transformer
-    :from '[:slide +]
-    :to [:p "torben"]
-    #_['carousel/carousel {:i    0
-                           :coll (map #(get % '+content) '<>)}]))
+    :from '[:slides [:<> [:slide +content]]]
+    :to (fn [{:syms [<>]}]
+          [carousel/carousel {:i    0
+                              :coll (mapv #(into [:div] (get % '+content)) <>)}])))
 
 (defonce css-href
   (interop/auto-revoked (atom nil)))
@@ -89,15 +97,11 @@
   [{:transformers [wrap-pbs]}
    {:transformers [ref-as-anchor
                    list-as-ul
-                   #_carousel-pbs]
+                   carousel-pbs]
     :wrapper      rescope/shadow-wrapper
-    :default      (fn [node]
-                    (->> node
-                         (helpers/attr->data-attr)
-                         (helpers/rename-attr {:xml:lang :lang
-                                               :xml:id   :id})
-                         (helpers/add-prefix "tei")
-                         (helpers/meta-into-attr)))}])
+    :default      (helpers/default-fn {:prefix    "tei"
+                                       :attr-kmap {:xml:lang :lang
+                                                   :xml:id   :id}})}])
 
 (defn app
   []
