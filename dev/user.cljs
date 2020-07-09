@@ -3,13 +3,14 @@
             [shadow.resource :as resource]
             [reagent.dom :as rdom]
             [meander.epsilon :as m]
-            [kuhumcst.rescope.formats.xml :as xml]
             [cuphic.core :as cup]
-            [cuphic.helpers :as helpers]
-            [kuhumcst.rescope.select :as select]
-            [kuhumcst.rescope.style :as style]
-            [kuhumcst.rescope.interop :as interop]
-            [kuhumcst.rescope.core :as rescope]))
+            [rescope.helpers :as helpers]
+            [rescope.formats.xml :as xml]
+            [rescope.select :as select]
+            [rescope.style :as style]
+            [rescope.interop :as interop]
+            [rescope.core :as rescope]))
+
 (def tei-example
   ;(resource/inline "examples/tei/1151anno-anno-tei.xml"))
   ;(resource/inline "examples/tei/tei_example.xml"))
@@ -42,7 +43,6 @@
     [:a {:href  ?ref
          :title (m/app da-type ?type)}
      [:slot]]))
-
 (def list-as-ul
   (cup/transformer
     :from '[:list +items]
@@ -68,8 +68,19 @@
           (let [{:keys [begin end]} (meta <>)
                 source (:source (meta bindings))]
             (vec (concat (subvec source 0 begin)
-                         [(into [:pbs] (subvec source begin end))]
+                         [(into [:slides] (->> (subvec source begin end)
+                                               (partition-by #(= :pb (first %)))
+                                               (partition 2)
+                                               (map (partial apply concat))
+                                               (map #(into [:slide] %))))]
                          (subvec source end)))))))
+
+(def carousel-pbs
+  (cup/transformer
+    :from '[:slide +]
+    :to [:p "torben"]
+    #_['carousel/carousel {:i    0
+                           :coll (map #(get % '+content) '<>)}]))
 
 (defonce css-href
   (interop/auto-revoked (atom nil)))
@@ -77,7 +88,8 @@
 (def stages
   [{:transformers [wrap-pbs]}
    {:transformers [ref-as-anchor
-                   list-as-ul]
+                   list-as-ul
+                   #_carousel-pbs]
     :wrapper      rescope/shadow-wrapper
     :default      (fn [node]
                     (->> node

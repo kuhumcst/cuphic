@@ -5,5 +5,7 @@
  :aliases {:app  {:extra-paths ["dev" "resources"]
                   :extra-deps  {thheller/shadow-cljs {:mvn/version "2.10.14"}
                                 reagent              {:mvn/version "0.10.0"}
-                                meander/epsilon      {:mvn/version "0.0.469"}}}
+                                meander/epsilon      {:mvn/version "0.0.469"}
+                                kuhumcst/rescope     {:git/url "https://github.com/kuhumcst/rescope.git"
+                                                      :sha     "76462b03325aa30b517aa092b3752ae1c5775037"}}}
            :test {:extra-paths ["test"]}}}
