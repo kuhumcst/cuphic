@@ -5,6 +5,7 @@
             [meander.epsilon :as m]
             [cuphic.core :as cup]
             [recap.widgets.carousel :as carousel]
+            [recap.css :as rcss]
             [rescope.helpers :as helpers]
             [rescope.formats.xml :as xml]
             [rescope.select :as select]
@@ -19,6 +20,14 @@
 
 (def css-example
   (resource/inline "examples/css/tei.css"))
+
+(def tei-css
+  (style/prefix-css "tei" css-example))
+
+(def recap+tei-css
+  (str rcss/shadow-style
+       "\n\n/*\n\t === tei.css ===\n*/\n"
+       tei-css))
 
 (defn da-type
   [type]
@@ -77,8 +86,25 @@
                          [(into [:slides] (->> (subvec source begin end)
                                                (partition-by #(= :pb (first %)))
                                                (partition 2)
+                                               (map (partial apply concat))
                                                (map #(into [:slide] %))))]
                          (subvec source end)))))))
+
+(def default-fn
+  (helpers/default-fn {:prefix    "tei"
+                       :attr-kmap {:xml:lang :lang
+                                   :xml:id   :id}}))
+
+(defn custom-wrapper
+  [old-node new-node]
+  (let [styled-slide (constantly [:<> [:style recap+tei-css] new-node])]
+    (vary-meta old-node assoc :ref (rescope/shadow-ref styled-slide))))
+
+(def internal-stage
+  {:transformers [ref-as-anchor
+                  list-as-ul]
+   :wrapper      custom-wrapper
+   :default      default-fn})
 
 ;; TODO: no CSS applied due to shadow root - how to fix?
 ;; TODO: illegal HTML tags since HTML displayed in shadow root come directly from captured bindings
@@ -87,34 +113,35 @@
   (cup/transformer
     :from '[:slides [:<> [:slide +content]]]
     :to (fn [{:syms [<>]}]
-          [carousel/carousel {:i    0
-                              :coll (mapv #(into [:div] (get % '+content)) <>)}])))
+          [carousel/carousel {:i   0
+                              :kvs (mapv (fn [page]
+                                           ["(missing page label)"
+                                            (into [:<>] (->> (get page '+content)
+                                                             (map #(cup/rewrite % [internal-stage]))))])
+                                         <>)}])))
 
 (defonce css-href
   (interop/auto-revoked (atom nil)))
 
-(def stages
+(def all-stages
   [{:transformers [wrap-pbs]}
    {:transformers [ref-as-anchor
                    list-as-ul
                    carousel-pbs]
-    :wrapper      rescope/shadow-wrapper
-    :default      (helpers/default-fn {:prefix    "tei"
-                                       :attr-kmap {:xml:lang :lang
-                                                   :xml:id   :id}})}])
+    :wrapper      custom-wrapper
+    :default      default-fn}])
 
 (defn app
   []
-  (let [css        (style/prefix-css "tei" css-example)
-        hiccup     (-> (xml/parse tei-example)
-                       (cup/rewrite stages))
+  (let [hiccup     (-> (xml/parse tei-example)
+                       (cup/rewrite all-stages))
         teiheader  (select/one hiccup (select/element :tei-teiheader))
         facsimile  (select/one hiccup (select/element :tei-facsimile))
         text       (select/one hiccup (select/element :tei-text))
         test-nodes (select/all hiccup
                                (select/element :tei-forename)
                                (select/attr {:data-type "first"}))]
-    (reset! css-href (interop/blob-url [css] {:type "text/css"}))
+    (reset! css-href (interop/blob-url [tei-css] {:type "text/css"}))
     [:<>
      [:fieldset
       [:legend "Document"]
@@ -123,12 +150,12 @@
        [:pre (with-out-str (pprint hiccup))]]
       [:details
        [:summary "CSS"]
-       [:pre css]]
+       [:pre tei-css]]
       ;; This is just left here as a proof of concept. Using <link> over <style>
       ;; in a shadow DOM introduces a bit of flickering in Chrome and Firefox,
       ;; which is not desirable. Safari seems unaffected, though.
       ;[rescope/scope hiccup [:link {:rel "stylesheet" :href @css-href}]]]
-      [rescope/scope hiccup css]]
+      [rescope/scope hiccup tei-css]]
      [:fieldset
       [:legend "Header"]
       [:details

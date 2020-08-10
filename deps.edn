@@ -7,7 +7,7 @@
                                 reagent              {:mvn/version "0.10.0"}
                                 meander/epsilon      {:mvn/version "0.0.469"}
                                 kuhumcst/rescope     {:git/url "https://github.com/kuhumcst/rescope.git"
-                                                      :sha     "76462b03325aa30b517aa092b3752ae1c5775037"}
+                                                      :sha     "901879bdfa489a70b26a1e9fdd381475207130ca"}
                                 kuhumcst/recap       {:git/url "https://github.com/kuhumcst/recap.git"
-                                                      :sha     "e3eb24e4f4084a64e39cf2dcb5c28b4528e34343"}}}
+                                                      :sha     "d721cdf31de0657d29fcec8883d0e667edc6376c"}}}
            :test {:extra-paths ["test"]}}}
