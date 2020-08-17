@@ -5,7 +5,7 @@
             [meander.epsilon :as m]
             [cuphic.core :as cup]
             [recap.widgets.carousel :as carousel]
-            [recap.css :as rcss]
+            [recap.css :as rc]
             [rescope.helpers :as helpers]
             [rescope.formats.xml :as xml]
             [rescope.select :as select]
@@ -25,9 +25,7 @@
   (style/prefix-css "tei" css-example))
 
 (def recap+tei-css
-  (str rcss/shadow-style
-       "\n\n/*\n\t === tei.css ===\n*/\n"
-       tei-css))
+  (str rc/shadow-style "\n\n/*\n\t === tei.css ===\n*/\n" tei-css))
 
 (defn da-type
   [type]
@@ -74,22 +72,6 @@
                  :title (da-type ?type)}
              [:slot]]))))
 
-;; In order to represent pbs as slides in a carousel their boundaries must be
-;; made explicit in the HTML structure.
-(def wrap-pbs
-  (cup/transformer
-    :from '[:div * [:<> [:pb] +]]
-    :to (fn [{:syms [<>] :as bindings}]
-          (let [{:keys [begin end]} (meta <>)
-                source (:source (meta bindings))]
-            (vec (concat (subvec source 0 begin)
-                         [(into [:slides] (->> (subvec source begin end)
-                                               (partition-by #(= :pb (first %)))
-                                               (partition 2)
-                                               (map (partial apply concat))
-                                               (map #(into [:slide] %))))]
-                         (subvec source end)))))))
-
 (def default-fn
   (helpers/default-fn {:prefix    "tei"
                        :attr-kmap {:xml:lang :lang
@@ -106,26 +88,39 @@
    :wrapper      custom-wrapper
    :default      default-fn})
 
-;; TODO: no CSS applied due to shadow root - how to fix?
-;; TODO: illegal HTML tags since HTML displayed in shadow root come directly from captured bindings
-;; TODO: React key warnings, forced div use (fix in recap)
+;; Fairly complex transformer that restructures sibling-level page content into
+;; an interactive carousel recap component. The large amount of content captured
+;; as page content has to be explicitly rewritten in a separate call. Otherwise,
+;; it will be skipped entirely.
 (def carousel-pbs
   (cup/transformer
-    :from '[:slides [:<> [:slide +content]]]
-    :to (fn [{:syms [<>]}]
-          [carousel/carousel {:i   0
-                              :kvs (mapv (fn [page]
-                                           ["(missing page label)"
-                                            (into [:<>] (->> (get page '+content)
-                                                             (map #(cup/rewrite % [internal-stage]))))])
-                                         <>)}])))
+    :from '[:div * [:<> [:pb] +]]
+    :to (fn [{:syms [<>] :as bindings}]
+          (let [{:keys [begin end]} (meta <>)
+                source     (:source (meta bindings))
+                pages      (->> (subvec source begin end)
+                                (partition-by #(= :pb (first %)))
+                                (partition 2)
+                                (map (partial apply concat)))
+                pp         (count pages)
+                kvs        (for [[[_ {:keys [n facs]}] :as page] pages]
+                             [(str "Side " n " af " pp "; facs. " facs ".")
+                              page])
+                rewrite-kv (fn [[k v]]
+                             (let [rewrite #(cup/rewrite % [internal-stage])]
+                               [k (into [:<>] (map rewrite v))]))]
+            [:<>
+             [cup/rewrite (subvec source 0 begin) [internal-stage]]
+             [carousel/carousel
+              {:i   0
+               :kvs (map rewrite-kv kvs)}
+              {:aria-label "Facsimile"}]]))))
 
 (defonce css-href
   (interop/auto-revoked (atom nil)))
 
 (def all-stages
-  [{:transformers [wrap-pbs]}
-   {:transformers [ref-as-anchor
+  [{:transformers [ref-as-anchor
                    list-as-ul
                    carousel-pbs]
     :wrapper      custom-wrapper
