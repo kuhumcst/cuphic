@@ -13,6 +13,11 @@
                   (with-meta (into {} children) (meta node))))
               root))
 
+(defn iterate-zipper
+  "Lazily iterate through all zipper states from the given `loc` to the end."
+  [loc]
+  (take-while (complement zip/end?) (iterate zip/next loc)))
+
 ;; https://groups.google.com/d/msg/clojure/FIJ5Pe-3PFM/JpYDQ2ejBgAJ
 (defn skip-subtree
   "Fast-forward a zipper to skip the subtree at `loc`."

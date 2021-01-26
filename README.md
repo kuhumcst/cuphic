@@ -23,15 +23,15 @@ Cuphic _looks_ like Hiccup and can _only_ transform Hiccup, but in return respec
 
 The Cuphic library is based on two primary functions:
 
-* `bindings` - captures values from Cuphic.
+* `get-bindings` - captures values from Cuphic.
 * `apply-bindings` - inserts values into Cuphic.
 
 These are in turn used by the following functions:
 
 * `matches` - checks if the given Hiccup matches the Cuphic.
 * `transform` - transforms Hiccup based on Cuphic from/to templates.
-* `transformer` - returns a function to transform Hiccup based on Cuphic from/to templates.
-* `rewrite` - takes a sequence of transformers and rewrites a Hiccup tree based on their return values.
+* `->transformer` - returns a function to transform Hiccup based on Cuphic from/to templates.
+* `rewrite` - rewrites a Hiccup tree based one or more stages of transformations.
 
 Basic usage
 -----------
@@ -130,7 +130,7 @@ The remaining nodes to either side of the captured fragment section are then han
  
  ```clojure
 ;; Values lined up with their capturing symbols. 
-(bindings '[:p  ?x   *between   ?y   [:<> 0 ?a ?b]   +remainder]
+(get-bindings '[:p  ?x   *between   ?y   [:<> 0 ?a ?b]   +remainder]
             [:p  1,   2 3 4 5,   6,   0 1 2  0 1 2,   7 8 9     ])
 
 ;;=> {?x 1, *between [2 3 4 5], ?y 6, <> [{?a 1, ?b 2} {?a 1, ?b 2}], +remainder [7 8 9]}
@@ -142,7 +142,7 @@ Performant Cuphic should be written to be as specific as possible with the outer
 For the bindings extraction algorithm to work best, there must be little ambiguity in the Cuphic.
 
 ```clojure
-(bindings '[?tag ?y +middle [:<> ?x]]
+(get-bindings '[?tag ?y +middle [:<> ?x]]
            [:div 1 2 3 4 5])
 
 ;;=> {?tag :div, ?y 1, +middle [2], <> [{?x 3} {?x 4} {?x 5}]}

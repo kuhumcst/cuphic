@@ -1,6 +1,6 @@
 (ns cuphic.core-test
   (:require [clojure.test :refer [deftest is testing]]
-            [cuphic.core :refer [bindings matches transform]]))
+            [cuphic.core :refer [get-bindings matches transform scan scrape]]))
 
 (def hiccup-example
   '[:div {:class "class"
@@ -36,87 +36,87 @@
 (deftest test-bindings
   (testing "basic symbol->value bindings"
     (is (= symbol->value
-           (bindings from hiccup-example))))
+           (get-bindings from hiccup-example))))
 
   (testing "hiccup source in metadata"
     (testing "basic symbol->value bindings"
       (is (= hiccup-example
-             (:source (meta (bindings from hiccup-example)))))))
+             (:source (meta (get-bindings from hiccup-example)))))))
 
   (testing "without optional attr"
     (is (= '{?tag :div}
-           (bindings '[?tag "text"] [:div {:class "class"} "text"]))))
+           (get-bindings '[?tag "text"] [:div {:class "class"} "text"]))))
 
   (testing "quantifiers"
     (testing "affixed"
       (testing "+"
         (is (= '{?tag :div +rest ["2" "3"]}
-               (bindings '[?tag "1" +rest] [:div "1" "2" "3"])))
+               (get-bindings '[?tag "1" +rest] [:div "1" "2" "3"])))
         (is (= '{?tag :div ?other "1" +rest ["3"]}
-               (bindings '[?tag ?other "2" +rest] [:div "1" "2" "3"])))
+               (get-bindings '[?tag ?other "2" +rest] [:div "1" "2" "3"])))
         (is (= '{?tag :div +rest ["2" "3"] ?other "1"}
-               (bindings '[?tag ?other +rest] [:div "1" "2" "3"])))
+               (get-bindings '[?tag ?other +rest] [:div "1" "2" "3"])))
         (is (= nil
-               (bindings '[?tag "1" +rest] [:div "1"]))))
+               (get-bindings '[?tag "1" +rest] [:div "1"]))))
 
       (testing "*"
         (is (= '{?tag :div *rest ["2" "3"]}
-               (bindings '[?tag "1" *rest] [:div "1" "2" "3"])))
+               (get-bindings '[?tag "1" *rest] [:div "1" "2" "3"])))
         (is (= '{?tag :div ?other "1" *rest ["3"]}
-               (bindings '[?tag ?other "2" *rest] [:div "1" "2" "3"])))
+               (get-bindings '[?tag ?other "2" *rest] [:div "1" "2" "3"])))
         (is (= '{?tag :div *rest ["2" "3"] ?other "1"}
-               (bindings '[?tag ?other *rest] [:div "1" "2" "3"])))
+               (get-bindings '[?tag ?other *rest] [:div "1" "2" "3"])))
         (is (= '{?tag :div *rest []}
-               (bindings '[?tag "1" *rest] [:div "1"])))))
+               (get-bindings '[?tag "1" *rest] [:div "1"])))))
 
     (testing "prefixed"
       (testing "+"
         (is (= '{?tag :div +rest ["1" "2"]}
-               (bindings '[?tag +rest "3"] [:div "1" "2" "3"])))
+               (get-bindings '[?tag +rest "3"] [:div "1" "2" "3"])))
         (is (= '{?tag :div ?other "3" +rest ["1"]}
-               (bindings '[?tag +rest "2" ?other] [:div "1" "2" "3"])))
+               (get-bindings '[?tag +rest "2" ?other] [:div "1" "2" "3"])))
         (is (= '{?tag :div +rest ["1" "2"] ?other "3"}
-               (bindings '[?tag +rest ?other] [:div "1" "2" "3"])))
+               (get-bindings '[?tag +rest ?other] [:div "1" "2" "3"])))
         (is (= nil
-               (bindings '[?tag +rest "1"] [:div "1"]))))
+               (get-bindings '[?tag +rest "1"] [:div "1"]))))
 
       (testing "*"
         (is (= '{?tag :div *rest ["1" "2"]}
-               (bindings '[?tag *rest "3"] [:div "1" "2" "3"])))
+               (get-bindings '[?tag *rest "3"] [:div "1" "2" "3"])))
         (is (= '{?tag :div ?other "3" *rest ["1"]}
-               (bindings '[?tag *rest "2" ?other] [:div "1" "2" "3"])))
+               (get-bindings '[?tag *rest "2" ?other] [:div "1" "2" "3"])))
         (is (= '{?tag :div *rest ["1" "2"] ?other "3"}
-               (bindings '[?tag *rest ?other] [:div "1" "2" "3"])))
+               (get-bindings '[?tag *rest ?other] [:div "1" "2" "3"])))
         (is (= '{?tag :div *rest []}
-               (bindings '[?tag *rest "1"] [:div "1"])))))
+               (get-bindings '[?tag *rest "1"] [:div "1"])))))
 
     (testing "infixed"
       (testing "+"
         (= '{+rest [4 5 6 7] ?tag :1 ?2 2 ?3 3 ?8 8 ?9 9}
-           (bindings '[?tag ?2 ?3 +rest ?8 ?9]
-                     [:1 2 3 4 5 6 7 8 9]))
+           (get-bindings '[?tag ?2 ?3 +rest ?8 ?9]
+                         [:1 2 3 4 5 6 7 8 9]))
         (= nil
-           (bindings '[?tag ?2 ?3 +rest ?8 ?9]
-                     [:1 2 3 8 9])))
+           (get-bindings '[?tag ?2 ?3 +rest ?8 ?9]
+                         [:1 2 3 8 9])))
 
       (testing "*"
         (= '{*rest [4 5 6 7] ?tag :1 ?2 2 ?3 3 ?8 8 ?9 9}
-           (bindings '[?tag ?2 ?3 *rest ?8 ?9]
-                     [:1 2 3 4 5 6 7 8 9]))
+           (get-bindings '[?tag ?2 ?3 *rest ?8 ?9]
+                         [:1 2 3 4 5 6 7 8 9]))
         (= '{?tag :1 ?2 2 ?3 3 ?8 8 ?9 9}
-           (bindings '[?tag ?2 ?3 *rest ?8 ?9]
-                     [:1 2 3 8 9])))))
+           (get-bindings '[?tag ?2 ?3 *rest ?8 ?9]
+                         [:1 2 3 8 9])))))
 
   (testing "fragments"
     (testing "with prefixed variables"
       (is (= '{?tag :p ?x 1 ?y 2 <> [{?z 1}]}
-             (bindings '[?tag ?x ?y [:<> ?z 2]]
-                       [:p 1 2 1 2]))))
+             (get-bindings '[?tag ?x ?y [:<> ?z 2]]
+                           [:p 1 2 1 2]))))
 
     (testing "with variables on both sides"
       (is (= '{?tag :p ?x 0 ?y 3 <> [{?z 2}]}
-             (bindings '[?tag ?x [:<> ?z 1] ?y]
-                       [:p 0 2 1 3]))))
+             (get-bindings '[?tag ?x [:<> ?z 1] ?y]
+                           [:p 0 2 1 3]))))
 
     (testing "with quantifiers"
       (testing "non-greedy"
@@ -126,28 +126,28 @@
                                         {?n 1 *rest []}
                                         {?n 2 *rest []}
                                         {?n 3 *rest []}]}
-               (bindings '[?tag ?x [:<> ?n *rest] ?y]
-                         [:p 0 1 2 3 1 2 3 99]))))
+               (get-bindings '[?tag ?x [:<> ?n *rest] ?y]
+                             [:p 0 1 2 3 1 2 3 99]))))
 
       (testing "fragments cannot intersect"
         (is (= nil
-               (bindings '[?tag ?x [:<> ?n +rest] ?y]
-                         [:p 0 1 2 3 1 2 3 99]))))
+               (get-bindings '[?tag ?x [:<> ?n +rest] ?y]
+                             [:p 0 1 2 3 1 2 3 99]))))
 
       ;; TODO: more tests, better tests
       (testing "fragments are bounded"
         (is (= '{+a [1] ?b 5 <> [{*y [2 3]}]}
-               (bindings '[:p +a [:<> *y 4] ?b]
-                         '[:p 1 2 3 4 5])))
+               (get-bindings '[:p +a [:<> *y 4] ?b]
+                             '[:p 1 2 3 4 5])))
 
         ;; No matching after pattern.
         (is (= nil
-               (bindings '[:p +a [:<> *y 4] ?b]
-                         '[:p 1 2 3 4])))
+               (get-bindings '[:p +a [:<> *y 4] ?b]
+                             '[:p 1 2 3 4])))
 
         (is (= '{?b 5 <> [{*y [1 2 3]}]}
-               (bindings '[:p [:<> *y 4] ?b]
-                         '[:p 1 2 3 4 5]))))
+               (get-bindings '[:p [:<> *y 4] ?b]
+                             '[:p 1 2 3 4 5]))))
 
       (testing "complex example"
         (is (= '{?type   "letter"
@@ -165,31 +165,31 @@
                            ?facs         "24.629"
                            +page-content [[:p {:xml:id "p5"} "2 "]
                                           [:p {:xml:id "p6"} "mit bord maaned efter maaned et fuldt færdigt manuskript , som ikke kan komme ud !"]]}]}
-               (bindings '[:div {:type ?type}
-                           +before
-                           [:<>
-                            [:pb {:n ?n :facs ?facs}]
-                            +page-content]]
+               (get-bindings '[:div {:type ?type}
+                               +before
+                               [:<>
+                                [:pb {:n ?n :facs ?facs}]
+                                +page-content]]
 
-                         [:div {:type "letter"}
+                             [:div {:type "letter"}
 
-                          ;; +before
-                          [:fw {}]
-                          [:opener
-                           {:xml:id "xx"}
-                           [:dateline {} [:settlement {:ref "#STED"}] [:date {:when "1942-06-30"}]]
-                           [:salute {} [:persname {:type "receiver", :ref "xx"} "MODTAGER "]]]
+                              ;; +before
+                              [:fw {}]
+                              [:opener
+                               {:xml:id "xx"}
+                               [:dateline {} [:settlement {:ref "#STED"}] [:date {:when "1942-06-30"}]]
+                               [:salute {} [:persname {:type "receiver", :ref "xx"} "MODTAGER "]]]
 
-                          ;; <>, first
-                          [:pb {:n "1", :facs "24.628"}]
-                          [:p {:xml:id "p1"} [:persname {:ref "#np60"} "Jens Holt"] " , 16 "]
-                          [:p {:xml:id "p2"} [:date {:when "1942-06-30"} "30 juni 1942"]]
-                          [:p {:xml:id "p3"} "Kære " [:persname {:ref "#np60"} "Holt"] " ,"]
+                              ;; <>, first
+                              [:pb {:n "1", :facs "24.628"}]
+                              [:p {:xml:id "p1"} [:persname {:ref "#np60"} "Jens Holt"] " , 16 "]
+                              [:p {:xml:id "p2"} [:date {:when "1942-06-30"} "30 juni 1942"]]
+                              [:p {:xml:id "p3"} "Kære " [:persname {:ref "#np60"} "Holt"] " ,"]
 
-                          ;; <>, second
-                          [:pb {:n "2", :facs "24.629"}]
-                          [:p {:xml:id "p5"} "2 "]
-                          [:p {:xml:id "p6"} "mit bord maaned efter maaned et fuldt færdigt manuskript , som ikke kan komme ud !"]])))))))
+                              ;; <>, second
+                              [:pb {:n "2", :facs "24.629"}]
+                              [:p {:xml:id "p5"} "2 "]
+                              [:p {:xml:id "p6"} "mit bord maaned efter maaned et fuldt færdigt manuskript , som ikke kan komme ud !"]])))))))
 
 
 (deftest test-matches
@@ -260,3 +260,45 @@
          (transform '[:p +begin "-" +middle "-" +end]
                     '[:p +end "-" +begin "-" +middle]
                     '[:p 1 2 3 "-" 4 5 6 "-" 7 8 9])))))
+
+(deftest test-searching
+  (testing "scan"
+    (is (= '([[?tag {:id ?id}]
+              {?tag :p, ?id "a"}
+              [[:p {:id "a"} [:span {:id "b"}]] {:l [], :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]]], :ppath nil, :r nil}]]
+
+             [[:span {:id ?id}]
+              {?id "b"}
+              [[:span {:id "b"}]
+               {:l      [],
+                :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]] [:p {:id "a"} [:span {:id "b"}]]],
+                :ppath  {:l [], :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]]], :ppath nil, :r nil},
+                :r      nil}]]
+
+             [[?tag {:id ?id}]
+              {?tag :span, ?id "b"}
+              [[:span {:id "b"}]
+               {:l      [],
+                :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]] [:p {:id "a"} [:span {:id "b"}]]],
+                :ppath  {:l [], :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]]], :ppath nil, :r nil},
+                :r      nil}]])
+
+           (scan [:div {}
+                  [:p {:id "a"}
+                   [:span {:id "b"}]]]
+                 '[?tag {:id "nada"}]
+                 '[:span {:id ?id}]
+                 '[?tag {:id ?id}]))))
+
+  (testing "scrape"
+    (is (= '[nil
+             ({?id "b"})
+             ({?tag :p, ?id "a"}
+              {?tag :span, ?id "b"})]
+
+           (scrape [:div {}
+                    [:p {:id "a"}
+                     [:span {:id "b"}]]]
+                   '[?tag {:id "nada"}]
+                   '[:span {:id ?id}]
+                   '[?tag {:id ?id}])))))

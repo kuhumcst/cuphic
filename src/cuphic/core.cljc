@@ -1,5 +1,5 @@
 (ns cuphic.core
-  "Data transformations for hiccup."
+  "Data transformations for Hiccup."
   (:require [clojure.spec.alpha :as s]
             [clojure.zip :as zip]
             [hickory.zip :as hzip]
@@ -13,11 +13,17 @@
                                                       Deletion
                                                       Insertion])))
 
-;; Some of the lower-leel binding fns require recursive calls to the parent fns.
-(declare bindings-delta)
+(def quantifier?
+  (partial s/valid? ::cs/quantifier))
+
+(def fragment?
+  (partial s/valid? ::cs/fragment))
+
+(def not-fragment?
+  (complement fragment?))
 
 (defn- hicv
-  "Helper function for normalised destructuring of a hiccup-vector `v`."
+  "Helper function for normalised destructuring of a Hiccup vector `v`."
   [v]
   (if (map? (second v))
     v
@@ -73,10 +79,11 @@
     ;; Otherwise, the Cuphic tag can only be a single-value placeholder,
     ;; keeping in mind that quantifiers are dealt with elsewhere.
     (s/valid? ::cs/? ctag)
-    (merge
-      (when (s/valid? ::cs/? ctag)
-        {ctag htag})
-      (attr-bindings cattr hattr))))
+    (when-let [bindings (attr-bindings cattr hattr)]
+      (merge {ctag htag} bindings))))
+
+;; Some binding helper fns require recursive calls to the parent fns.
+(declare bindings-delta)
 
 (defn- fixed-bindings
   "Get the symbol->value mapping found comparing two sequential collections.
@@ -111,9 +118,6 @@
                                 :end   section-end})
               (recur (inc i)))))))))
 
-(def quantifier?
-  (partial s/valid? ::cs/quantifier))
-
 (defn- direct-bindings
   "Return 1:1 bindings between `pattern` and `nodes` as kvs."
   [pattern nodes]
@@ -126,10 +130,6 @@
                 :else (reduced nil)))
             []
             (map vector pattern nodes))))
-
-(defn- not-fragment?
-  [x]
-  (not (s/valid? ::cs/fragment x)))
 
 (defn capture-pattern
   "Create a capture pattern from a sequence of `cnodes`. Returns the input data
@@ -406,9 +406,9 @@
     (s/valid? ::cs/? cnode)
     {cnode hnode}))
 
-(defn bindings
+(defn get-bindings
   "Get the symbol->value mapping found when comparing `cuphic` to `hiccup`.
-  Returns nil if the hiccup does not match the cuphic.
+  Returns nil if the Hiccup does not match the Cuphic.
 
   The two data structures are zipped through in parallel while their bindings
   are collected incrementally."
@@ -421,8 +421,8 @@
       (with-meta (dissoc ret '? '* '+) {:source hiccup})
       (when-let [delta (bindings-delta (zip/node cloc) (zip/node hloc))]
         ;; Subtrees should be skipped in two cases:
-        ;;   1) If the cuphic is a fragment, e.g. [:<> ...].
-        ;;   2) If the cuphic contains a quantifier, e.g. + or *.
+        ;;   1) If the Cuphic is a fragment, e.g. [:<> ...].
+        ;;   2) If the Cuphic contains a quantifier, e.g. + or *.
         ;; TODO: analyse delta rather than metadata?
         ;; Currently, metadata notifies the `bindings` function of the need to
         ;; skip subtrees, although this could also be accomplished by looking at
@@ -436,29 +436,29 @@
 (defn matches
   "Returns the match, if any, of `hiccup` to `cuphic`."
   [cuphic hiccup]
-  (when (bindings cuphic hiccup)
+  (when (get-bindings cuphic hiccup)
     hiccup))
 
 (defn- fragment-replace
-  "Given a `loc` and a sequence of `fragment-bindings`, replace the loc with
-  multiple fragments with individual bindings applied."
-  [[node :as loc] fragment-bindings]
-  (let [parts             (subvec (hicv node) 2)
-        bindings->section (fn [symbol->value]
-                            (mapcat (fn [x]
-                                      (if (s/valid? ::cs/quantifier x)
-                                        (symbol->value x)
-                                        [(symbol->value x x)])) parts))
-        replacements      (mapcat bindings->section fragment-bindings)]
+  "Given a fragment `loc` and one or more fragment `fbindings`, substitute the
+  loc with the fragments, each fragment's individual bindings applied."
+  [[node :as loc] fbindings]
+  (let [parts              (subvec (hicv node) 2)
+        fbindings->section (fn [symbol->value]
+                             (mapcat (fn [x]
+                                       (if (s/valid? ::cs/quantifier x)
+                                         (symbol->value x)
+                                         [(symbol->value x x)])) parts))
+        replacements       (mapcat fbindings->section fbindings)]
     (czip/multi-replace loc replacements)))
 
 (defn apply-bindings
-  "Apply `symbol->value` bindings to a piece of `cuphic`."
-  [symbol->value cuphic]
+  "Apply symbol->value `bindings` to a piece of `cuphic`."
+  [bindings cuphic]
   (loop [[node :as loc] (czip/vector-map-zip cuphic)]
     (if (zip/end? loc)
       (zip/root loc)
-      (let [replacement (symbol->value node)]
+      (let [replacement (get bindings node)]
         (recur (zip/next (cond
                            replacement
                            (if (s/valid? ::cs/quantifier node)
@@ -466,32 +466,39 @@
                              (zip/replace loc replacement))
 
                            (and (s/valid? ::cs/fragment node)
-                                (contains? symbol->value '<>))
-                           (fragment-replace loc (get symbol->value '<>))
+                                (contains? bindings '<>))
+                           (fragment-replace loc (get bindings '<>))
 
                            :else loc)))))))
 
 (defn transform
-  "Transform hiccup using cuphic from/to templates.
+  "Transform `hiccup` using `from` and `to` templates Cuphic templates (or fns).
 
   Substitutes symbols in `to` with bound values from `hiccup` based on symbols
-  in `from`. The cuphic templates can also be replaced with functions that
+  in `from`. The Cuphic templates can also be replaced with functions that
   either produce or consume a symbol->value map. "
   [from to hiccup]
   (when-let [symbol->value (if (fn? from)
                              (from hiccup)
-                             (bindings from hiccup))]
+                             (get-bindings from hiccup))]
     (if (fn? to)
       (to symbol->value)
       (apply-bindings symbol->value to))))
 
-(defn transformer
-  "Make a transform fn to transform hiccup using cuphic from/to templates."
-  [& {:keys [from to]}]
+(defn ->transformer
+  "Make a transformer fn to transform Hiccup using Cuphic `from`/`to` templates.
+
+  The returned fn will return the transformed value on successful matches and
+  nil otherwise."
+  [from to]
   (partial transform from to))
 
 (defn- apply-stage
-  "Apply a `stage` of transformations to a Hiccup `node`."
+  "Apply a `stage` of transformations to a Hiccup `node`.
+
+  Transformations are applied in order. The earliest successful transformation
+  takes precedence over any following transformations. Nil punning is used to
+  ascertain whether a match is successful."
   [node {:keys [wrapper transformers default]
          :or   {default identity}
          :as   stage}]
@@ -504,16 +511,16 @@
              node)))
 
 (defn rewrite
-  "Process the nodes of `hiccup` tree in a sequence of `stages`.
+  "Process the nodes of some `hiccup` in one or more transformation `stages`.
 
   Stages are maps with the following keys (optional):
     :transformers - sequence of transformer fns applied to each Hiccup node.
     :wrapper      - fn applied to [node new-node] on successful transformations.
     :default      - fn applied to every Hiccup node as a final step.
 
-  Note: a transformer is an fn that, given a Hiccup node, attempts to match the
-  node, returning a transformed node on matches, otherwise returning nil."
-  [hiccup stages]
+  A transformer is an fn that, given a Hiccup node, attempts to match the node,
+  returning a transformed node on matches, otherwise returning nil."
+  [hiccup & stages]
   (loop [[node :as loc] (hzip/hiccup-zip hiccup)]
     (if (zip/end? loc)
       (zip/root loc)
@@ -523,3 +530,74 @@
                              (zip/replace loc new-node)
                              loc))
                          loc))))))
+
+;; TODO: make a simple select fn too, replacing the rescope one
+(defn scan
+  "Given some `hiccup` and one or more `cuphic` expressions to match, return a
+  lazy sequence of matches, each match having the form [cuphic bindings loc].
+
+  This returns matches in the order they are found while iterating through the
+  zipper. It also returns the loc, making it possible to see the exact state of
+  the zipper and location of the node. Unless you specifically need access the
+  locs directly, just use the scrape fn defined below instead."
+  [hiccup & cuphic]
+  (->> (hzip/hiccup-zip hiccup)
+       (czip/iterate-zipper)
+       (mapcat (fn [[node :as loc]]
+                 (for [cuphic cuphic
+                       :let [bindings (get-bindings cuphic node)]
+                       :when bindings]
+                   [cuphic bindings loc])))
+       (concat)))
+
+(defn scrape
+  "Given some `hiccup` and one or more `cuphic` expressions to match, return
+  [bindings-1 ... bindings-n] with n being the number of Cuphic expressions.
+
+  This can be used to mine Hiccup data (e.g. a webpage) using Cuphic expressions
+  to match and bind values from specific Hiccup nodes:
+
+    (scrape [:div {}
+             [:p {:id \"p\"}
+              [:span {:id \"span\"}]]]
+
+            '[?tag {:id \"nada\"}]   ; x
+            '[:span {:id ?id}]       ; y
+            '[?tag {:id ?id}])       ; z
+
+   ... which will return:
+
+     [nil                            ; x -- nothing matches
+      ({?id \"span\"})               ; y -- only :span matches
+      ({?tag :p, ?id \"p\"}          ; z -- :p and :span both match
+       {?tag :span, ?id \"span\"})]
+
+  For a more low-level operation where node locations are needed, use the
+  scan fn defined above instead."
+  [hiccup & cuphic]
+  (let [scans           (apply scan hiccup cuphic)
+        cuphic->results (into {} (for [[k v] (group-by first scans)]
+                                   [k (map second v)]))]
+    (mapv cuphic->results cuphic)))
+
+
+(comment
+  (scan [:p {} [:date {:when "glen"}]]
+        '[:nada {:when "does not exist"}]
+        '[? {:when "glen"}]
+        '[? {:when ?date}])
+
+  (scrape [:div {}
+           [:p {:id "p"}
+            [:span {:id "span"}]]]
+
+          '[?tag {:id "nada"}]                              ; x
+          '[:span {:id ?id}]                                ; y
+          '[?tag {:id ?id}])                                ; z
+
+  (let [[b1 b2 b3] (scrape [:p {} [:date {:when "glen"}]]
+                           '[? {:when "does not exist"}]
+                           '[? {:when "glen"}]
+                           '[? {:when ?date}])]
+    (zipmap '[b1 b2 b3] [b1 b2 b3]))
+  #_.)

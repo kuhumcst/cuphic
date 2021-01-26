@@ -4,8 +4,8 @@
             [reagent.dom :as rdom]
             [meander.epsilon :as m]
             [cuphic.core :as cup]
-            [recap.widgets.carousel :as carousel]
-            [recap.css :as rc]
+            [dk.cst.stucco.plastic :as plastic]
+            [dk.cst.stucco.util.css :as stucco-css]
             [rescope.helpers :as helpers]
             [rescope.formats.xml :as xml]
             [rescope.select :as select]
@@ -25,7 +25,7 @@
   (style/prefix-css "tei" css-example))
 
 (def recap+tei-css
-  (str rc/shadow-style "\n\n/*\n\t === tei.css ===\n*/\n" tei-css))
+  (str stucco-css/shadow-style "\n\n/*\n\t === tei.css ===\n*/\n" tei-css))
 
 (defn da-type
   [type]
@@ -55,22 +55,24 @@
      [:slot]]))
 
 (def list-as-ul
-  (cup/transformer
-    :from '[:list +items]
-    :to (fn [{:syms [+items]}]
-          (into [:ul] (for [[tag attr & content] +items]
-                        (into [:li] content))))))
+  (cup/->transformer
+    '[:list +items]
+
+    (fn [{:syms [+items]}]
+      (into [:ul] (for [[tag attr & content] +items]
+                    (into [:li] content))))))
 
 (def ref-as-anchor
-  (cup/transformer
-    :from '[? {:ref  ?ref
-               :type ?type} *]
-    :to (fn [{:syms [?ref ?type]}]
-          ;; TODO: bug in attr-bindings - now need to check for attr existence
-          (when ?ref
-            [:a {:href  ?ref
-                 :title (da-type ?type)}
-             [:slot]]))))
+  (cup/->transformer
+    '[? {:ref  ?ref
+         :type ?type} *]
+
+    (fn [{:syms [?ref ?type]}]
+      ;; TODO: bug in attr-bindings - now need to check for attr existence
+      (when ?ref
+        [:a {:href  ?ref
+             :title (da-type ?type)}
+         [:slot]]))))
 
 (def default-fn
   (helpers/default-fn {:prefix    "tei"
@@ -82,7 +84,7 @@
   (let [styled-slide (constantly [:<> [:style recap+tei-css] new-node])]
     (vary-meta old-node assoc :ref (rescope/shadow-ref styled-slide))))
 
-(def internal-stage
+(def inner-stage
   {:transformers [ref-as-anchor
                   list-as-ul]
    :wrapper      custom-wrapper
@@ -93,47 +95,48 @@
 ;; as page content has to be explicitly rewritten in a separate call. Otherwise,
 ;; it will be skipped entirely.
 (def carousel-pbs
-  (cup/transformer
-    :from '[:div * [:<> [:pb] +]]
-    :to (fn [{:syms [<>] :as bindings}]
-          (let [{:keys [begin end]} (meta <>)
-                source     (:source (meta bindings))
-                pages      (->> (subvec source begin end)
-                                (partition-by #(= :pb (first %)))
-                                (partition 2)
-                                (map (partial apply concat)))
-                pp         (count pages)
-                kvs        (for [[[_ {:keys [n facs]}] :as page] pages]
-                             [(str "Side " n " af " pp "; facs. " facs ".")
-                              page])
-                rewrite-kv (fn [[k v]]
-                             (let [rewrite #(cup/rewrite % [internal-stage])]
-                               [k (into [:<>] (map rewrite v))]))]
-            [:<>
-             [cup/rewrite (subvec source 0 begin) [internal-stage]]
-             [carousel/carousel
-              {:i   0
-               :kvs (map rewrite-kv kvs)}
-              {:aria-label "Facsimile"}]]))))
+  (cup/->transformer
+    '[:div * [:<> [:pb] +]]
+
+    (fn [{:syms [<>] :as bindings}]
+      (let [{:keys [begin end]} (meta <>)
+            source     (:source (meta bindings))
+            pages      (->> (subvec source begin end)
+                            (partition-by #(= :pb (first %)))
+                            (partition 2)
+                            (map (partial apply concat)))
+            pp         (count pages)
+            kvs        (for [[[_ {:keys [n facs]}] :as page] pages]
+                         [(str "Side " n " af " pp "; facs. " facs ".")
+                          page])
+            rewrite-kv (fn [[k v]]
+                         (let [rewrite #(cup/rewrite % inner-stage)]
+                           [k (into [:<>] (map rewrite v))]))]
+        [:<>
+         [cup/rewrite (subvec source 0 begin) inner-stage]
+         [plastic/carousel
+          {:i   0
+           :kvs (map rewrite-kv kvs)}
+          {:aria-label "Facsimile"}]]))))
 
 (defonce css-href
   (interop/auto-revoked (atom nil)))
 
-(def all-stages
-  [{:transformers [ref-as-anchor
-                   list-as-ul
-                   carousel-pbs]
-    :wrapper      custom-wrapper
-    :default      default-fn}])
+(def outer-stage
+  {:transformers [ref-as-anchor
+                  list-as-ul
+                  carousel-pbs]
+   :wrapper      custom-wrapper
+   :default      default-fn})
 
 (defn app
   []
-  (let [hiccup     (-> (xml/parse tei-example)
-                       (cup/rewrite all-stages))
-        teiheader  (select/one hiccup (select/element :tei-teiheader))
-        facsimile  (select/one hiccup (select/element :tei-facsimile))
-        text       (select/one hiccup (select/element :tei-text))
-        test-nodes (select/all hiccup
+  (let [hiccup     (xml/parse tei-example)
+        hiccup*    (cup/rewrite hiccup outer-stage)
+        teiheader  (select/one hiccup* (select/element :tei-teiheader))
+        facsimile  (select/one hiccup* (select/element :tei-facsimile))
+        text       (select/one hiccup* (select/element :tei-text))
+        test-nodes (select/all hiccup*
                                (select/element :tei-forename)
                                (select/attr {:data-type "first"}))]
     (reset! css-href (interop/blob-url [tei-css] {:type "text/css"}))
@@ -144,13 +147,26 @@
        [:summary "Hiccup"]
        [:pre (with-out-str (pprint hiccup))]]
       [:details
+       [:summary "Hiccup*"]
+       [:pre (with-out-str (pprint hiccup*))]]
+      [:details
        [:summary "CSS"]
        [:pre tei-css]]
+
+      ;; Test searching for terms
+      [:pre (with-out-str (pprint (cup/scrape hiccup
+                                              '[?tag {:when ?when}]
+                                              '[?tag {:when "2020"}])))]
+      ;; Test scanning for terms
+      #_[:pre (with-out-str (pprint (cup/scan hiccup
+                                              '[?tag {:when ?when}]
+                                              '[?tag {:when "2020"}])))]
+
       ;; This is just left here as a proof of concept. Using <link> over <style>
       ;; in a shadow DOM introduces a bit of flickering in Chrome and Firefox,
       ;; which is not desirable. Safari seems unaffected, though.
       ;[rescope/scope hiccup [:link {:rel "stylesheet" :href @css-href}]]]
-      [rescope/scope hiccup tei-css]]
+      [rescope/scope hiccup* tei-css]]
      [:fieldset
       [:legend "Header"]
       [:details

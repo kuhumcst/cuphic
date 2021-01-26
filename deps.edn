@@ -1,7 +1,7 @@
 {:paths   ["src"]
  :deps    {org.clojure/clojurescript {:mvn/version "1.10.773"}
            hickory                   {:mvn/version "0.7.1"}
-           lambdaisland/deep-diff2   {:mvn/version "2.0.0-93"}}
+           lambdaisland/deep-diff2   {:mvn/version "2.0.108"}}
  :aliases {:app  {:extra-paths ["dev" "resources"]
                   :extra-deps  {thheller/shadow-cljs {:mvn/version "2.10.14"}
                                 reagent              {:mvn/version "0.10.0"}
@@ -9,5 +9,5 @@
                                 kuhumcst/rescope     {:git/url "https://github.com/kuhumcst/rescope.git"
                                                       :sha     "901879bdfa489a70b26a1e9fdd381475207130ca"}
                                 kuhumcst/recap       {:git/url "https://github.com/kuhumcst/recap.git"
-                                                      :sha     "d721cdf31de0657d29fcec8883d0e667edc6376c"}}}
+                                                      :sha     "46f46d8b394b72e531000429d47456e520e1b327"}}}
            :test {:extra-paths ["test"]}}}
