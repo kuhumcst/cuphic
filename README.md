@@ -33,6 +33,11 @@ These are in turn used by the following functions:
 * `->transformer` - returns a function to transform Hiccup based on Cuphic from/to templates.
 * `rewrite` - rewrites a Hiccup tree based one or more stages of transformations.
 
+There is also separate search functionality:
+
+* `scan` - scans a Hiccup tree and returns matches based on Cuphic expressions.
+* `scrape` - a bit more convenient return values than `scan` for many use cases.
+
 Basic usage
 -----------
 > _Note: consider the examples prepended with `(require '[cuphic.core :refer :all])`_
