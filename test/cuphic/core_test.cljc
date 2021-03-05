@@ -14,7 +14,7 @@
      [:span "x"]
      [:em "y"]]])
 
-;; Includes _ (ignored values) meaning it can only be a "from" template.
+;; Includes _ (ignored values) meaning it can only be a "from" pattern.
 (def from
   '[?div {:class ?class
           :id    _

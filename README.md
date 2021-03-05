@@ -29,8 +29,8 @@ The Cuphic library is based on two primary functions:
 These are in turn used by the following functions:
 
 * `matches` - checks if the given Hiccup matches the Cuphic.
-* `transform` - transforms Hiccup based on Cuphic from/to templates.
-* `->transformer` - returns a function to transform Hiccup based on Cuphic from/to templates.
+* `transform` - transforms Hiccup based on Cuphic from/to patterns.
+* `->transformer` - returns a function to transform Hiccup based on Cuphic from/to patterns.
 * `rewrite` - rewrites a Hiccup tree based one or more stages of transformations.
 
 There is also separate search functionality:
@@ -42,7 +42,7 @@ Basic usage
 -----------
 > _Note: consider the examples prepended with `(require '[cuphic.core :refer :all])`_
 >
-This is a Cuphic template that can be used to either **bind** or **insert** two values:
+This is a Cuphic pattern that can be used to either **bind** or **insert** two values:
 
 ```clojure
 [?tag {:id ?id} "some text"]
@@ -57,7 +57,7 @@ Symbols prefixed with a question mark such as `?tag` and `?id` are bound to the 
 ;;=> {?tag :div, ?id "my-id"}
 ````
 
-These `symbol->value` bindings can be used _as-is_ or inserted into another Cuphic template:
+These `symbol->value` bindings can be used _as-is_ or inserted into another Cuphic pattern:
 
 ```clojure
 (apply-bindings '{?tag :p, ?id "my-id"}                   ; symbol->value
@@ -66,7 +66,7 @@ These `symbol->value` bindings can be used _as-is_ or inserted into another Cuph
 ;;=> [:p {:id "my-id"} "some other text"]
 ```
 
-You don't have to use all the bindings. Omitting a name from a special symbol can be used to ignore values when producing bindings from a Cuphic template, i.e. in the previous example `?tag` should probably have been `?` since we don't actually care about the value of `?tag`.
+You don't have to use all the bindings. Omitting a name from a special symbol can be used to ignore values when producing bindings from a Cuphic pattern, i.e. in the previous example `?tag` should probably have been `?` since we don't actually care about the value of `?tag`.
 
 The two functions can also be combined:
 
@@ -82,9 +82,9 @@ The two functions can also be combined:
 
 Functions as an escape hatch
 ----------------------------
-Cuphic is not dogmatic about being declarative. If you ever need to veer into algorithm territory, you can just leave the declarative DSL and substitute either of the two Cuphic templates with an equivalent function.
+Cuphic is not dogmatic about being declarative. If you ever need to veer into algorithm territory, you can just leave the declarative DSL and substitute either of the two Cuphic patterns with an equivalent function.
 
-The `from` template can be replaced with a `hiccup->bindings` function:
+The `from` pattern can be replaced with a `hiccup->bindings` function:
 
 ```clojure
 (transform (fn [hiccup]                                   ; hiccup->bindings
@@ -96,7 +96,7 @@ The `from` template can be replaced with a `hiccup->bindings` function:
            [:div {:id "my-id"} "some text"])              ; hiccup
 ```
 
-The `to` template can be replaced with a `bindings->hiccup` function:
+The `to` pattern can be replaced with a `bindings->hiccup` function:
 
 ```clojure
 (transform '[?tag {:id ?id} "some text"]                  ; from cuphic
@@ -107,7 +107,7 @@ The `to` template can be replaced with a `bindings->hiccup` function:
 
 Functions can be useful in certain tricky situations, but you should also be able to see the value of using Cuphic for doing most of your Hiccup transformations.
 
-In cases where you need to _postprocess_ the bound values, using a function does become necessary. Fortunately, wrapping an existing Cuphic template with `(fn [{:syms [...]}] ...)` is enough to let you do function calls inside it.
+In cases where you need to _postprocess_ the bound values, using a function does become necessary. Fortunately, wrapping an existing Cuphic pattern with `(fn [{:syms [...]}] ...)` is enough to let you do function calls inside it.
 
 More examples
 -------------

@@ -472,10 +472,10 @@
                            :else loc)))))))
 
 (defn transform
-  "Transform `hiccup` using `from` and `to` templates Cuphic templates (or fns).
+  "Transform `hiccup` using `from`/`to` Cuphic patterns (or fns).
 
   Substitutes symbols in `to` with bound values from `hiccup` based on symbols
-  in `from`. The Cuphic templates can also be replaced with functions that
+  in `from`. The Cuphic patterns can also be replaced with functions that
   either produce or consume a symbol->value map. "
   [from to hiccup]
   (when-let [symbol->value (if (fn? from)
@@ -486,7 +486,7 @@
       (apply-bindings symbol->value to))))
 
 (defn ->transformer
-  "Make a transformer fn to transform Hiccup using Cuphic `from`/`to` templates.
+  "Make a transformer fn to transform Hiccup using `from`/`to` Cuphic patterns.
 
   The returned fn will return the transformed value on successful matches and
   nil otherwise."
@@ -533,7 +533,7 @@
 
 ;; TODO: make a simple select fn too, replacing the rescope one
 (defn scan
-  "Given some `hiccup` and one or more `cuphic` expressions to match, return a
+  "Given some `hiccup` and one or more `cuphic` patterns to match, return a
   lazy sequence of matches, each match having the form [cuphic bindings loc].
 
   This returns matches in the order they are found while iterating through the
@@ -551,19 +551,19 @@
        (concat)))
 
 (defn scrape
-  "Given some `hiccup` and one or more `cuphic` expressions to match, return
-  [bindings-1 ... bindings-n] with n being the number of Cuphic expressions.
+  "Given some `hiccup` and one or more `cuphic` patterns to match, return
+  [bindings-1 ... bindings-n] with n being the number of Cuphic patterns.
 
-  This can be used to mine Hiccup data (e.g. a webpage) using Cuphic expressions
+  This can be used to mine Hiccup data (e.g. a webpage) using Cuphic patterns
   to match and bind values from specific Hiccup nodes:
 
     (scrape [:div {}
              [:p {:id \"p\"}
               [:span {:id \"span\"}]]]
 
-            '[?tag {:id \"nada\"}]   ; x
-            '[:span {:id ?id}]       ; y
-            '[?tag {:id ?id}])       ; z
+            '[?tag {:id \"nada\"}]   ; pattern x
+            '[:span {:id ?id}]       ; pattern y
+            '[?tag {:id ?id}])       ; pattern z
 
    ... which will return:
 
