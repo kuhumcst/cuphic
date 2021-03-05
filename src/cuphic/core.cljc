@@ -567,19 +567,19 @@
 
    ... which will return:
 
-     [nil                            ; x -- nothing matches
-      ({?id \"span\"})               ; y -- only :span matches
-      ({?tag :p, ?id \"p\"}          ; z -- :p and :span both match
-       {?tag :span, ?id \"span\"})]
+     (nil                            ; x => nothing matches
+      ({?id \"span\"})               ; y => only :span matches
+      ({?tag :p, ?id \"p\"}          ; z => :p and :span both match
+       {?tag :span, ?id \"span\"}))
 
-  For a more low-level operation where node locations are needed, use the
-  scan fn defined above instead."
+  For a more low-level operation, try the scan fn above instead."
   [hiccup & cuphic]
-  (let [scans           (apply scan hiccup cuphic)
-        cuphic->results (into {} (for [[k v] (group-by first scans)]
-                                   [k (map second v)]))]
-    (mapv cuphic->results cuphic)))
-
+  (let [scans             (apply scan hiccup cuphic)
+        bindings-with-loc (fn [[_ bindings loc]]
+                            (with-meta bindings {:loc loc}))
+        cuphic->results   (into {} (for [[k v] (group-by first scans)]
+                                     [k (map bindings-with-loc v)]))]
+    (map cuphic->results cuphic)))
 
 (comment
   (scan [:p {} [:date {:when "glen"}]]

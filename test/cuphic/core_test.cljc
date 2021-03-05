@@ -261,8 +261,8 @@
                     '[:p +end "-" +begin "-" +middle]
                     '[:p 1 2 3 "-" 4 5 6 "-" 7 8 9])))))
 
-(deftest test-searching
-  (testing "scan"
+(deftest test-scraping
+  (testing "scanning a Hiccup tree"
     (is (= '([[?tag {:id ?id}]
               {?tag :p, ?id "a"}
               [[:p {:id "a"} [:span {:id "b"}]] {:l [], :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]]], :ppath nil, :r nil}]]
@@ -290,15 +290,25 @@
                  '[:span {:id ?id}]
                  '[?tag {:id ?id}]))))
 
-  (testing "scrape"
-    (is (= '[nil
-             ({?id "b"})
-             ({?tag :p, ?id "a"}
-              {?tag :span, ?id "b"})]
+  (testing "scraping a Hiccup tree"
+    (let [actual (scrape [:div {}
+                          [:p {:id "a"}
+                           [:span {:id "b"}]]]
+                         '[?tag {:id "nada"}]
+                         '[:span {:id ?id}]
+                         '[?tag {:id ?id}])]
+      (is (= '[nil
+               ({?id "b"})
+               ({?tag :p, ?id "a"}
+                {?tag :span, ?id "b"})]
 
-           (scrape [:div {}
-                    [:p {:id "a"}
-                     [:span {:id "b"}]]]
-                   '[?tag {:id "nada"}]
-                   '[:span {:id ?id}]
-                   '[?tag {:id ?id}])))))
+             actual))
+
+      (testing "scrape includes metadata for the zipper loc"
+        (let [[empty-result [x] [y z]] actual
+              meta-loc? (comp :zip/branch? meta :loc meta)]
+          (is (nil? empty-result))
+          (is (not= x y z))
+          (is (some? (meta-loc? x)))
+          (is (some? (meta-loc? y)))
+          (is (some? (meta-loc? z))))))))
