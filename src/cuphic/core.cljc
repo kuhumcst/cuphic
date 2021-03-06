@@ -68,7 +68,7 @@
 
 (defn- tag+attr-bindings
   "Get the symbol->value mapping found when comparing only tags and attrs of a
-  normalised Cuphic vector `cv` and a normalised Hiccup vector `hv`.
+  normalised Cuphic pattern and a normalised Hiccup vector.
   Returns nil if the two vectors don't match."
   [[ctag cattr] [htag hattr]]
   (cond
@@ -119,9 +119,9 @@
               (recur (inc i)))))))))
 
 (defn- direct-bindings
-  "Return 1:1 bindings between `pattern` and `nodes` as kvs."
-  [pattern nodes]
-  (when (= (count pattern) (count nodes))
+  "Return 1:1 bindings between `capture-pattern` and `nodes` as kvs."
+  [capture-pattern nodes]
+  (when (= (count capture-pattern) (count nodes))
     (reduce (fn [kvs [k v :as kv]]
               (cond
                 (= k v) kvs
@@ -129,7 +129,7 @@
                 (vector? v) (apply conj kvs (bindings-delta k v))
                 :else (reduced nil)))
             []
-            (map vector pattern nodes))))
+            (map vector capture-pattern nodes))))
 
 (defn capture-pattern
   "Create a capture pattern from a sequence of `cnodes`. Returns the input data
@@ -164,7 +164,7 @@
                          :parts      parts
                          :min-count  (min-count)}))))
 
-(defn ->patterns
+(defn ->capture-patterns
   "Partition a list of `cnodes` into a list of capture patterns."
   [cnodes]
   (->> (partition-by symbol? cnodes)
@@ -239,8 +239,8 @@
 ;; TODO: tests
 ;; TODO: :source
 (defn- fragment-bindings
-  "Given a `fragment` Cuphic vector and a sequence of `nodes`, return a sequence
-  of bindings for matching sections."
+  "Given a Cuphic `fragment` pattern and a sequence of `nodes`, return a coll of
+  bindings for matching sections."
   [fragment nodes & {:keys [limit begin end] :as opts}]
   (let [!quantifier (complement (partial s/valid? ::cs/quantifier))
         ccoll       (if (map? (second fragment))
@@ -363,10 +363,10 @@
         ;; Fragments are bounded by segments on either side.
         (let [[before [fragment & after]] (split-with not-fragment? cnodes)]
           (if fragment
-            (let [bpatterns      (not-empty (->patterns before))
-                  apatterns      (not-empty (->patterns after))
+            (let [bpatterns      (not-empty (->capture-patterns before))
+                  apatterns      (not-empty (->capture-patterns after))
                   fnodes         (->nodes fragment)
-                  fragment-count (min-capture (->patterns fnodes))
+                  fragment-count (min-capture (->capture-patterns fnodes))
                   before-count   (min-capture bpatterns)
                   after-count    (min-capture apatterns)
                   max-count      (count hnodes)]
@@ -398,7 +398,8 @@
                                               qdelta)
                                        {:skip [cv hv]})))))))))
 
-            (when-let [delta (pattern-bindings (->patterns cnodes) hnodes)]
+            (when-let [delta (pattern-bindings (->capture-patterns cnodes)
+                                               hnodes)]
               (with-meta (merge tag+attr-delta delta)
                          {:skip [cv hv]}))))))
 
@@ -407,22 +408,22 @@
     {cnode hnode}))
 
 (defn get-bindings
-  "Get the symbol->value mapping found when comparing `cuphic` to `hiccup`.
-  Returns nil if the Hiccup does not match the Cuphic.
+  "Return the bindings found comparing a Cuphic `pattern` to some `hiccup`.
+  Returns nil if the Hiccup does not match the pattern.
 
   The two data structures are zipped through in parallel while their bindings
   are collected incrementally."
-  [cuphic hiccup]
-  (assert (s/valid? ::cs/cuphic cuphic))                    ; elide in prod
-  (loop [cloc (hzip/hiccup-zip cuphic)
+  [pattern hiccup]
+  (assert (s/valid? ::cs/cuphic pattern))                   ; elide in prod
+  (loop [cloc (hzip/hiccup-zip pattern)
          hloc (hzip/hiccup-zip hiccup)
          ret  {}]
     (if (zip/end? hloc)
       (with-meta (dissoc ret '? '* '+) {:source hiccup})
       (when-let [delta (bindings-delta (zip/node cloc) (zip/node hloc))]
         ;; Subtrees should be skipped in two cases:
-        ;;   1) If the Cuphic is a fragment, e.g. [:<> ...].
-        ;;   2) If the Cuphic contains a quantifier, e.g. + or *.
+        ;;   1) If the Cuphic pattern is a fragment, e.g. [:<> ...].
+        ;;   2) If the Cuphic pattern contains a quantifier, e.g. + or *.
         ;; TODO: analyse delta rather than metadata?
         ;; Currently, metadata notifies the `bindings` function of the need to
         ;; skip subtrees, although this could also be accomplished by looking at
@@ -434,9 +435,9 @@
           (recur (zip/next cloc*) (zip/next hloc*) (merge ret delta)))))))
 
 (defn matches
-  "Returns the match, if any, of `hiccup` to `cuphic`."
-  [cuphic hiccup]
-  (when (get-bindings cuphic hiccup)
+  "Returns the match, if any, of `hiccup` to a Cuphic `pattern`."
+  [pattern hiccup]
+  (when (get-bindings pattern hiccup)
     hiccup))
 
 (defn- fragment-replace
@@ -453,9 +454,9 @@
     (czip/multi-replace loc replacements)))
 
 (defn apply-bindings
-  "Apply symbol->value `bindings` to a piece of `cuphic`."
-  [bindings cuphic]
-  (loop [[node :as loc] (czip/vector-map-zip cuphic)]
+  "Apply symbol->value `bindings` to a Cuphic `pattern`."
+  [bindings pattern]
+  (loop [[node :as loc] (czip/vector-map-zip pattern)]
     (if (zip/end? loc)
       (zip/root loc)
       (let [replacement (get bindings node)]
@@ -472,26 +473,26 @@
                            :else loc)))))))
 
 (defn transform
-  "Transform `hiccup` using `from`/`to` Cuphic patterns (or fns).
+  "Transform `hiccup` using Cuphic `from-pattern` and `to-pattern`.
 
-  Substitutes symbols in `to` with bound values from `hiccup` based on symbols
-  in `from`. The Cuphic patterns can also be replaced with functions that
-  either produce or consume a symbol->value map. "
-  [from to hiccup]
-  (when-let [symbol->value (if (fn? from)
-                             (from hiccup)
-                             (get-bindings from hiccup))]
-    (if (fn? to)
-      (to symbol->value)
-      (apply-bindings symbol->value to))))
+  Substitutes symbols in `to-pattern` with bound values from `hiccup` based on
+  symbols in `from-pattern`. The Cuphic patterns can also be replaced with
+  functions that either produce or consume a symbol->value map. "
+  [from-pattern to-pattern hiccup]
+  (when-let [symbol->value (if (fn? from-pattern)
+                             (from-pattern hiccup)
+                             (get-bindings from-pattern hiccup))]
+    (if (fn? to-pattern)
+      (to-pattern symbol->value)
+      (apply-bindings symbol->value to-pattern))))
 
 (defn ->transformer
-  "Make a transformer fn to transform Hiccup using `from`/`to` Cuphic patterns.
+  "Make a transformer to transform Hiccup using `from-pattern` and `to-pattern`.
 
   The returned fn will return the transformed value on successful matches and
   nil otherwise."
-  [from to]
-  (partial transform from to))
+  [from-pattern to-pattern]
+  (partial transform from-pattern to-pattern))
 
 (defn- apply-stage
   "Apply a `stage` of transformations to a Hiccup `node`.

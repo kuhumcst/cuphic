@@ -1,6 +1,6 @@
 Cuphic
 ======
-Cuphic<sup>[†](#note-pronunciation)</sup> is a macro-free, declarative DSL for performing [Hiccup](https://github.com/weavejester/hiccup) data transformations in Clojure/ClojureScript. It is designed to be both easy to use and simple to understand.
+Cuphic<sup>[†](#note-pronunciation)</sup> is a macro-free, declarative DSL for performing [Hiccup](https://github.com/weavejester/hiccup) data transformations in Clojure/ClojureScript using patterns that look like Hiccup. It can also be used to scrape Hiccup data. Cuphic is designed to be both easy to use and simple to understand.
 
 > _<a name="note-pronunciation"><sup>†</sup></a> The name is pronounced *CUP*-hic, not *QUEUE*-fig._
 
@@ -35,8 +35,8 @@ These are in turn used by the following functions:
 
 There is also separate search functionality:
 
-* `scan` - scans a Hiccup tree and returns matches based on Cuphic expressions.
-* `scrape` - a bit more convenient return values than `scan` for many use cases.
+* `scan` - scans a Hiccup tree and returns matches based on Cuphic patterns.
+* `scrape` - groups the return values of `scan` inside a slighly more palatable map.
 
 Basic usage
 -----------

@@ -155,8 +155,8 @@
 
       ;; Test searching for terms
       [:pre (with-out-str (pprint (cup/scrape hiccup
-                                              '[?tag {:when ?when}]
-                                              '[?tag {:when "2020"}])))]
+                                              {:x '[?tag {:when ?when}]
+                                               :y '[?tag {:when "2020"}]})))]
       ;; Test scanning for terms
       #_[:pre (with-out-str (pprint (cup/scan hiccup
                                               '[?tag {:when ?when}]
