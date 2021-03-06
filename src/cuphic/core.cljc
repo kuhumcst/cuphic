@@ -533,71 +533,89 @@
 
 ;; TODO: make a simple select fn too, replacing the rescope one
 (defn scan
-  "Given some `hiccup` and one or more `cuphic` patterns to match, return a
-  lazy sequence of matches, each match having the form [cuphic bindings loc].
+  "Given some `hiccup` and one or more Cuphic `patterns` to match, return a lazy
+  sequence of match results. Each result - successful or not - has the form
+  [loc bindings-1 ... bindings-n] with n being the number of Cuphic patterns.
 
-  This returns matches in the order they are found while iterating through the
-  zipper. It also returns the loc, making it possible to see the exact state of
-  the zipper and location of the node. Unless you specifically need access the
-  locs directly, just use the scrape fn defined below instead."
-  [hiccup & cuphic]
-  (->> (hzip/hiccup-zip hiccup)
-       (czip/iterate-zipper)
-       (mapcat (fn [[node :as loc]]
-                 (for [cuphic cuphic
-                       :let [bindings (get-bindings cuphic node)]
-                       :when bindings]
-                   [cuphic bindings loc])))
-       (concat)))
+  Results come in the order they are scanned while iterating through the zipper.
+  Many result rows will probably have nil results for most or all patterns.
+  The result rows also include the loc, making it possible to see the exact
+  state of the zipper at each node and retrieve the node itself."
+  [hiccup & patterns]
+  (let [pattern->bindings-fn #(comp (partial get-bindings %) first)
+        bindings-fns         (map pattern->bindings-fn patterns)
+        loc->result-row      (apply juxt identity bindings-fns)]
+    (->> (hzip/hiccup-zip hiccup)
+         (czip/iterate-zipper)
+         (map loc->result-row))))
 
 (defn scrape
-  "Given some `hiccup` and one or more `cuphic` patterns to match, return
-  [bindings-1 ... bindings-n] with n being the number of Cuphic patterns.
+  "Given some `hiccup` and a map `k->pattern` from keys to Cuphic patterns,
+  return the map k->results, where results is a collection of bindings for all
+  matches found for the pattern identified by k.
 
   This can be used to mine Hiccup data (e.g. a webpage) using Cuphic patterns
-  to match and bind values from specific Hiccup nodes:
+  to match and bind values from target Hiccup nodes:
 
     (scrape [:div {}
              [:p {:id \"p\"}
               [:span {:id \"span\"}]]]
 
-            '[?tag {:id \"nada\"}]   ; pattern x
-            '[:span {:id ?id}]       ; pattern y
-            '[?tag {:id ?id}])       ; pattern z
+            {:x '[?tag {:id \"nada\"}]
+             :y '[:span {:id ?id}]
+             :z '[?tag {:id ?id}]})
 
    ... which will return:
 
-     (nil                            ; x => nothing matches
-      ({?id \"span\"})               ; y => only :span matches
-      ({?tag :p, ?id \"p\"}          ; z => :p and :span both match
-       {?tag :span, ?id \"span\"}))
+     {:y [{?id \"span\"}]
+      :z [{?tag :p
+           ?id  \"p\"}
+          {?tag :span
+           ?id  \"span\"}]}
 
-  For a more low-level operation, try the scan fn above instead."
-  [hiccup & cuphic]
-  (let [scans             (apply scan hiccup cuphic)
-        bindings-with-loc (fn [[_ bindings loc]]
-                            (with-meta bindings {:loc loc}))
-        cuphic->results   (into {} (for [[k v] (group-by first scans)]
-                                     [k (map bindings-with-loc v)]))]
-    (map cuphic->results cuphic)))
+  For a more low-level operation, try the scan function defined above instead."
+  [hiccup k->pattern]
+  (let [i->k  (into {} (map-indexed vector (keys k->pattern)))
+        scans (apply scan hiccup (vals k->pattern))]
+    (reduce (fn [m [loc & results]]
+              (->> (map-indexed (fn [i v]
+                                  (when v
+                                    [(i->k i) [(with-meta v {:loc loc})]]))
+                                results)
+                   (remove nil?)
+                   (into {})
+                   (merge-with into m)))
+            {}
+            scans)))
 
 (comment
-  (scan [:p {} [:date {:when "glen"}]]
-        '[:nada {:when "does not exist"}]
-        '[? {:when "glen"}]
-        '[? {:when ?date}])
+  (scan [:div {}
+         [:p {:id "p"}
+          [:span {:id "span"}]]]
+
+        '[?tag {:id "nada"}]                                ; x
+        '[:span {:id ?id}]                                  ; y
+        '[?tag {:id ?id}])                                  ; z
 
   (scrape [:div {}
            [:p {:id "p"}
             [:span {:id "span"}]]]
 
-          '[?tag {:id "nada"}]                              ; x
-          '[:span {:id ?id}]                                ; y
-          '[?tag {:id ?id}])                                ; z
+          {:x '[?tag {:id "nada"}]
+           :y '[:span {:id ?id}]
+           :z '[?tag {:id ?id}]})
 
-  (let [[b1 b2 b3] (scrape [:p {} [:date {:when "glen"}]]
-                           '[? {:when "does not exist"}]
-                           '[? {:when "glen"}]
-                           '[? {:when ?date}])]
-    (zipmap '[b1 b2 b3] [b1 b2 b3]))
+  ;; retrieve a loc from metadata
+  (-> (scrape [:div {}
+               [:p {:id "p"}
+                [:span {:id "span"}]]]
+
+              {:nada  '[?tag {:id "nada"}]
+               :glen  '[:span {:id ?id}]
+               :?date '[?tag {:id ?id}]})
+      first
+      second
+      first
+      meta
+      :loc)
   #_.)

@@ -263,25 +263,19 @@
 
 (deftest test-scraping
   (testing "scanning a Hiccup tree"
-    (is (= '([[?tag {:id ?id}]
-              {?tag :p, ?id "a"}
-              [[:p {:id "a"} [:span {:id "b"}]] {:l [], :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]]], :ppath nil, :r nil}]]
-
-             [[:span {:id ?id}]
+    (is (= '([[[:div {} [:p {:id "a"} [:span {:id "b"}]]] nil] nil nil nil]
+             [[[:p {:id "a"} [:span {:id "b"}]] {:l [], :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]]], :ppath nil, :r nil}]
+              nil
+              nil
+              {?tag :p, ?id "a"}]
+             [[[:span {:id "b"}]
+               {:l      [],
+                :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]] [:p {:id "a"} [:span {:id "b"}]]],
+                :ppath  {:l [], :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]]], :ppath nil, :r nil},
+                :r      nil}]
+              nil
               {?id "b"}
-              [[:span {:id "b"}]
-               {:l      [],
-                :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]] [:p {:id "a"} [:span {:id "b"}]]],
-                :ppath  {:l [], :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]]], :ppath nil, :r nil},
-                :r      nil}]]
-
-             [[?tag {:id ?id}]
-              {?tag :span, ?id "b"}
-              [[:span {:id "b"}]
-               {:l      [],
-                :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]] [:p {:id "a"} [:span {:id "b"}]]],
-                :ppath  {:l [], :pnodes [[:div {} [:p {:id "a"} [:span {:id "b"}]]]], :ppath nil, :r nil},
-                :r      nil}]])
+              {?tag :span, ?id "b"}])
 
            (scan [:div {}
                   [:p {:id "a"}
@@ -294,21 +288,20 @@
     (let [actual (scrape [:div {}
                           [:p {:id "a"}
                            [:span {:id "b"}]]]
-                         '[?tag {:id "nada"}]
-                         '[:span {:id ?id}]
-                         '[?tag {:id ?id}])]
-      (is (= '[nil
-               ({?id "b"})
-               ({?tag :p, ?id "a"}
-                {?tag :span, ?id "b"})]
-
+                         {:x '[?tag {:id "nada"}]
+                          :y '[:span {:id ?id}]
+                          :z '[?tag {:id ?id}]})]
+      (is (= '{:z [{?tag :p
+                    ?id  "a"}
+                   {?tag :span
+                    ?id  "b"}]
+               :y [{?id "b"}]}
              actual))
 
       (testing "scrape includes metadata for the zipper loc"
-        (let [[empty-result [x] [y z]] actual
-              meta-loc? (comp :zip/branch? meta :loc meta)]
-          (is (nil? empty-result))
-          (is (not= x y z))
-          (is (some? (meta-loc? x)))
-          (is (some? (meta-loc? y)))
-          (is (some? (meta-loc? z))))))))
+        (let [locs (->> (vals actual)
+                        (apply concat)
+                        (map (comp :loc meta)))
+              loc? (comp :zip/branch? meta)]
+          (is (apply not= locs))
+          (is (every? loc? locs)))))))
