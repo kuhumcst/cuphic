@@ -535,7 +535,6 @@
                              loc))
                          loc))))))
 
-;; TODO: make a simple select fn too, replacing the rescope one
 (defn scan
   "Given some `hiccup` and one or more Cuphic `patterns` to match, return a lazy
   sequence of match results. Each result - successful or not - has the form
@@ -552,6 +551,18 @@
     (->> (hzip/hiccup-zip hiccup)
          (czip/iterate-zipper)
          (map loc->result-row))))
+
+(defn select-all
+  "Select all nodes in `hiccup` matching the Cuphic `pattern`."
+  [hiccup pattern]
+  (->> (scan hiccup pattern)
+       (remove (comp nil? second))
+       (map ffirst)))
+
+(defn select-one
+  "Select the first node in `hiccup` matching the Cuphic `pattern`."
+  [hiccup pattern]
+  (first (select-all hiccup pattern)))
 
 (defn scrape
   "Given some `hiccup` and a map `k->pattern` from keys to Cuphic patterns,
