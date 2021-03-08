@@ -282,7 +282,16 @@
                    [:span {:id "b"}]]]
                  '[?tag {:id "nada"}]
                  '[:span {:id ?id}]
-                 '[?tag {:id ?id}]))))
+                 '[?tag {:id ?id}]))
+
+        (testing "should return only nil bindings for no matches"
+          (let [actual (scan [:div {}
+                              [:p {:id "p"}
+                               [:span {:id "span"}]]]
+
+                             '[:div {} [:p {:id "nada"}]])]
+            (is (every? vector? (map first actual)))
+            (is (every? nil? (map second actual)))))))
 
   (testing "scraping a Hiccup tree"
     (let [actual (scrape [:div {}
@@ -298,7 +307,15 @@
                :y [{?id "b"}]}
              actual))
 
-      (testing "scrape includes metadata for the zipper loc"
+      (testing "should return an empty map when no bindings are found"
+        (is (= {}
+               (scrape [:div {}
+                        [:p {:id "p"}
+                         [:span {:id "span"}]]]
+
+                       {:nada '[:div {} [:p {:id "nada"}]]}))))
+
+      (testing "should include metadata containing zipper locs"
         (let [locs (->> (vals actual)
                         (apply concat)
                         (map (comp :loc meta)))

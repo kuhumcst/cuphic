@@ -126,7 +126,9 @@
               (cond
                 (= k v) kvs
                 (symbol? k) (conj kvs kv)
-                (vector? v) (apply conj kvs (bindings-delta k v))
+                (vector? v) (if-let [delta (bindings-delta k v)]
+                              (apply conj kvs delta)
+                              (reduced nil))
                 :else (reduced nil)))
             []
             (map vector capture-pattern nodes))))
@@ -194,10 +196,11 @@
         (when (<= min-count (count hnodes))
           (case quantifier
             ;; With no quantifier, we simply capture the direct bindings.
-            nil (let [bound   (subvec hnodes 0 min-count)
-                      unbound (subvec hnodes min-count)
-                      ret*    (into ret (direct-bindings pattern bound))]
-                  (recur ret* unbound patterns))
+            nil (let [bound     (subvec hnodes 0 min-count)
+                      unbound   (subvec hnodes min-count)
+                      dbindings (direct-bindings pattern bound)]
+                  (when dbindings
+                    (recur (into ret dbindings) unbound patterns)))
 
             :prefix (let [[[quantifier] after] parts
                           bound   (nodes-until next-pattern hnodes min-count)
