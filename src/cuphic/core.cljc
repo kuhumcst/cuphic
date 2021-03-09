@@ -459,21 +459,20 @@
 (defn apply-bindings
   "Apply symbol->value `bindings` to a Cuphic `pattern`."
   [bindings pattern]
-  (loop [[node :as loc] (czip/vector-map-zip pattern)]
-    (if (zip/end? loc)
-      (zip/root loc)
-      (let [replacement (get bindings node)]
-        (recur (zip/next (cond
-                           replacement
-                           (if (s/valid? ::cs/quantifier node)
-                             (czip/multi-replace loc replacement)
-                             (zip/replace loc replacement))
+  (->> (czip/vector-map-zip pattern)
+       (czip/reduce-zipper (fn [loc node]
+                             (let [replacement (get bindings node)]
+                               (cond
+                                 replacement
+                                 (if (s/valid? ::cs/quantifier node)
+                                   (czip/multi-replace loc replacement)
+                                   (zip/replace loc replacement))
 
-                           (and (s/valid? ::cs/fragment node)
-                                (contains? bindings '<>))
-                           (fragment-replace loc (get bindings '<>))
+                                 (and (s/valid? ::cs/fragment node)
+                                      (contains? bindings '<>))
+                                 (fragment-replace loc (get bindings '<>))
 
-                           :else loc)))))))
+                                 :else loc))))))
 
 (defn transform
   "Transform `hiccup` using Cuphic `from-pattern` and `to-pattern`.
@@ -525,15 +524,14 @@
   A transformer is an fn that, given a Hiccup node, attempts to match the node,
   returning a transformed node on matches, otherwise returning nil."
   [hiccup & stages]
-  (loop [[node :as loc] (hzip/hiccup-zip hiccup)]
-    (if (zip/end? loc)
-      (zip/root loc)
-      (recur (zip/next (if (vector? node)
-                         (let [new-node (reduce apply-stage node stages)]
-                           (if (not= node new-node)
-                             (zip/replace loc new-node)
-                             loc))
-                         loc))))))
+  (->> (hzip/hiccup-zip hiccup)
+       (czip/reduce-zipper (fn [loc node]
+                             (if (vector? node)
+                               (let [node* (reduce apply-stage node stages)]
+                                 (if (not= node node*)
+                                   (zip/replace loc node*)
+                                   loc))
+                               loc)))))
 
 (defn scan
   "Given some `hiccup` and one or more Cuphic `patterns` to match, return a lazy

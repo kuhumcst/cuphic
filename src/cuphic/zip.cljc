@@ -1,4 +1,5 @@
 (ns cuphic.zip
+  "Generic zipper functions."
   (:require [clojure.zip :as zip]))
 
 (defn vector-map-zip
@@ -17,6 +18,15 @@
   "Lazily iterate through all zipper states from the given `loc` to the end."
   [loc]
   (take-while (complement zip/end?) (iterate zip/next loc)))
+
+(defn reduce-zipper
+  "Traverse the zipper starting from `loc`, applying `f` to all locs on the way.
+  Once the whole zipper has been traversed, zip up and return the changed tree."
+  [f loc]
+  (loop [[node :as loc] loc]
+    (if (zip/end? loc)
+      (zip/root loc)
+      (recur (zip/next (f loc node))))))
 
 ;; https://groups.google.com/d/msg/clojure/FIJ5Pe-3PFM/JpYDQ2ejBgAJ
 (defn skip-subtree
