@@ -8,32 +8,11 @@
                                                                 Deletion
                                                                 Insertion]])
             [cuphic.spec :as cs]
+            [cuphic.symbols :as syms]
             [cuphic.zip :as czip])
   #?(:clj (:import [lambdaisland.deep_diff2.diff_impl Mismatch
                                                       Deletion
                                                       Insertion])))
-
-(def quantifier?
-  (partial s/valid? ::cs/quantifier))
-
-(def fragment?
-  (partial s/valid? ::cs/fragment))
-
-(def not-fragment?
-  (complement fragment?))
-
-(defn- hicv
-  "Helper function for normalised destructuring of a Hiccup vector `v`."
-  [v]
-  (if (map? (second v))
-    v
-    (into [(first v) {}] (rest v))))
-
-(defn- ->nodes
-  [v]
-  (if (map? (second v))
-    (subvec v 2)
-    (subvec v 1)))
 
 ;; TODO: replace brittle deep-diff2, sometimes different diffs in clj vs. cljs
 (defn- attr-bindings
@@ -66,376 +45,200 @@
 
             (recur (zip/next loc) ret)))))))
 
-(defn- tag+attr-bindings
-  "Get the symbol->value mapping found when comparing only tags and attrs of a
-  normalised Cuphic pattern and a normalised Hiccup vector.
-  Returns nil if the two vectors don't match."
-  [[ctag cattr] [htag hattr]]
+(declare get-bindings)
+
+(defn- node-bindings
+  "Return a potential direct binding between `pnode` and `node`."
+  [pnode node]
   (cond
-    ;; If the tags match, we can rely on checking attr bindings.
-    (= ctag htag)
-    (attr-bindings cattr hattr)
-
-    ;; Otherwise, the Cuphic tag can only be a single-value placeholder,
-    ;; keeping in mind that quantifiers are dealt with elsewhere.
-    (s/valid? ::cs/? ctag)
-    (when-let [bindings (attr-bindings cattr hattr)]
-      (merge {ctag htag} bindings))))
-
-;; Some binding helper fns require recursive calls to the parent fns.
-(declare bindings-delta)
-
-(defn- fixed-bindings
-  "Get the symbol->value mapping found comparing two sequential collections.
-  This function is used to scoop up bindings that would otherwise be skipped
-  if a quantifier is present.
-  Returns nil if the two vectors don't match."
-  [ccoll hcoll]
-  (when (= (count ccoll) (count hcoll))                     ; performance optm.
-    (loop [[cnode & ccoll] ccoll
-           [hnode & hcoll] hcoll
-           ret {}]
-      (if (and cnode hnode)
-        (when-let [delta (bindings-delta cnode hnode)]
-          (recur ccoll hcoll (merge ret delta)))
-        (when (and (empty? ccoll) (empty? hcoll))
-          ret)))))
-
-(defn- section-search
-  "Find the bindings of the first occurrence of fixed-length sequence `cnodes`
-  in `hnodes` starting the search at the `begin` index. As an aid to the caller,
-  the indices of the matching subsection are attached as metadata."
-  [cnodes hnodes begin]
-  (when (not (empty? cnodes))
-    (let [section-size (count cnodes)
-          end          (- (count hnodes) section-size)]
-      (loop [i begin]
-        (when (<= i end)
-          (let [section-end (+ i section-size)
-                candidate   (subvec hnodes i section-end)]
-            (if-let [delta (fixed-bindings cnodes candidate)]
-              (with-meta delta {:begin i
-                                :end   section-end})
-              (recur (inc i)))))))))
-
-(defn- direct-bindings
-  "Return 1:1 bindings between `capture-pattern` and `nodes` as kvs."
-  [capture-pattern nodes]
-  (when (= (count capture-pattern) (count nodes))
-    (reduce (fn [kvs [k v :as kv]]
-              (cond
-                (= k v) kvs
-                (symbol? k) (conj kvs kv)
-                (vector? v) (if-let [delta (bindings-delta k v)]
-                              (apply conj kvs delta)
-                              (reduced nil))
-                :else (reduced nil)))
-            []
-            (map vector capture-pattern nodes))))
-
-(defn capture-pattern
-  "Create a capture pattern from a sequence of `cnodes`. Returns the input data
-  structure with relevant metadata attached, or nil if invalid."
-  [cnodes]
-  (let [parts            (partition-by quantifier? cnodes)
-        quantifiers      (filter (comp quantifier? first) parts)
-        quantifier-count (count quantifiers)
-        min-count        (fn []
-                           (if (s/valid? ::cs/+ (ffirst quantifiers))
-                             (count cnodes)
-                             (dec (count cnodes))))]
-    (cond
-      (> quantifier-count 1)
-      nil
-
-      (= quantifier-count 0)
-      (with-meta cnodes {:min-count (count cnodes)})
-
-      (quantifier? (first cnodes))
-      (with-meta cnodes {:quantifier :prefix
-                         :parts      parts
-                         :min-count  (min-count)})
-
-      (quantifier? (last cnodes))
-      (with-meta cnodes {:quantifier :affix
-                         :parts      parts
-                         :min-count  (min-count)})
-
-      :else
-      (with-meta cnodes {:quantifier :infix
-                         :parts      parts
-                         :min-count  (min-count)}))))
-
-(defn ->capture-patterns
-  "Partition a list of `cnodes` into a list of capture patterns."
-  [cnodes]
-  (->> (partition-by symbol? cnodes)
-       (map capture-pattern)))
-
-(defn- min-capture
-  "Return the aggregate min-count of a list of `capture-patterns`."
-  [capture-patterns]
-  (reduce + (map (comp :min-count meta) capture-patterns)))
-
-(defn- pattern-bindings
-  "Given a list of cnodes partitioned into `capture-patterns`, return the
-  bindings found in `hnodes`."
-  [capture-patterns hnodes]
-  (loop [ret    {}
-         hnodes hnodes
-         [pattern & [next-pattern :as patterns]] capture-patterns]
-    (let [{:keys [quantifier parts min-count]} (meta pattern)
-          nodes-until (fn [cnodes hnodes begin]
-                        (let [hit (section-search cnodes hnodes begin)]
-                          (subvec hnodes 0 (or (:begin (meta hit))
-                                               (count hnodes)))))
-          min-nodes?  (fn [quantifier nodes]
-                        (not (and (= 0 (count nodes))
-                                  (s/valid? ::cs/+ quantifier))))]
-      (if pattern
-        (when (<= min-count (count hnodes))
-          (case quantifier
-            ;; With no quantifier, we simply capture the direct bindings.
-            nil (let [bound     (subvec hnodes 0 min-count)
-                      unbound   (subvec hnodes min-count)
-                      dbindings (direct-bindings pattern bound)]
-                  (when dbindings
-                    (recur (into ret dbindings) unbound patterns)))
-
-            :prefix (let [[[quantifier] after] parts
-                          bound   (nodes-until next-pattern hnodes min-count)
-                          unbound (subvec hnodes (count bound))
-                          split   (- (count bound) (count after))
-                          qnodes  (subvec bound 0 split)
-                          anodes  (subvec bound split)
-                          kvs     (concat (direct-bindings after anodes)
-                                          {quantifier qnodes})]
-                      (when (min-nodes? quantifier qnodes)
-                        (recur (apply merge ret kvs) unbound patterns)))
-
-            :affix (let [[before [quantifier]] parts
-                         bound   (nodes-until next-pattern hnodes min-count)
-                         unbound (subvec hnodes (count bound))
-                         split   (count before)
-                         bnodes  (subvec bound 0 split)
-                         qnodes  (subvec bound split)
-                         kvs     (concat (direct-bindings before bnodes)
-                                         {quantifier qnodes})]
-                     (when (min-nodes? quantifier qnodes)
-                       (recur (apply merge ret kvs) unbound patterns)))
-
-            :infix (let [[before [quantifier] after] parts
-                         bound   (nodes-until next-pattern hnodes min-count)
-                         unbound (subvec hnodes (count bound))
-                         split-1 (count before)
-                         split-2 (- (count bound) (count after))
-                         bnodes  (subvec bound 0 split-1)
-                         anodes  (subvec bound split-2)
-                         qnodes  (subvec bound split-1 split-2)
-                         kvs     (concat (direct-bindings before bnodes)
-                                         (direct-bindings after anodes)
-                                         {quantifier qnodes})]
-                     (when (min-nodes? quantifier qnodes)
-                       (recur (apply merge ret kvs) unbound patterns)))))
-        ret))))
-
-;; TODO: tests
-;; TODO: :source
-(defn- fragment-bindings
-  "Given a Cuphic `fragment` pattern and a sequence of `nodes`, return a coll of
-  bindings for matching sections."
-  [fragment nodes & {:keys [limit begin end] :as opts}]
-  (let [!quantifier (complement (partial s/valid? ::cs/quantifier))
-        ccoll       (if (map? (second fragment))
-                      (subvec fragment 2)
-                      (subvec fragment 1))
-        [before [quantifier & after]] (split-with !quantifier ccoll)
-        nodes-size  (count nodes)
-        min-size    (+ (count before)
-                       (count after)
-                       (if (s/valid? ::cs/+ quantifier) 1 0))]
-    (when (>= (count nodes) min-size)                       ; For performance
-      (loop [i      (or begin 0)
-             search {}
-             ret    []]
-        (cond
-          ;; Optional early return when a set end has been reached.
-          (> i end)
-          ret
-
-          ;; Optional early return when a result limit has been set.
-          (= (count ret) limit)
-          ret
-
-          ;; Return result vector when the nodes are exhausted.
-          (and (>= i nodes-size)
-               (empty? search))
-          ret
-
-          ;; Search for the `before` section when applicable.
-          ;; Returns the result vector if the search is inconclusive.
-          (and (not (:before search))
-               (seq before))
-          (if-let [before-search (section-search before nodes i)]
-            (recur (:end (meta before-search))
-                   (assoc search :before before-search)
-                   ret)
-            ret)
-
-          ;; Search for the `after` section when applicable.
-          ;; Returns the result vector if the search is inconclusive.
-          (and (not (:after search))
-               (seq after))
-          (if-let [after-search (section-search after nodes i)]
-            (recur (:end (meta after-search))
-                   (assoc search :after after-search)
-                   ret)
-            ret)
-
-          ;; Search for a recurrence of the `before` section to avoid greedy
-          ;; incidental matching of any upcoming fragments.
-          (and (not (:recur search))
-               (seq before)
-               (not (seq after)))
-          (let [recur-search (section-search before nodes i)]
-            (recur (or (:begin (meta recur-search))
-                       i)
-                   (assoc search :recur (or recur-search {}))
-                   ret))
-
-          ;; Capture nodes from `before` to `after` sections when applicable.
-          ;; If there is no `after` section, the quantifier either:
-          ;;   1) Captures until the next recurrence of the `begin` section.
-          ;;   2) Captures all of the remaining nodes.
-          quantifier
-          (let [between-begin (or (:end (meta (:before search)))
-                                  (:end (meta (last ret)))
-                                  begin)
-                between-end   (or (:begin (meta (:after search)))
-                                  (:begin (meta (:recur search)))
-                                  (count nodes))
-                between       (if (< between-begin between-end)
-                                (subvec nodes between-begin between-end)
-                                [])
-                ret*          (when (not (and (empty? between)
-                                              (s/valid? ::cs/+ quantifier)))
-                                (let [section {:begin (- between-begin
-                                                         (count before))
-                                               :end   (+ between-end
-                                                         (count after))}]
-                                  (conj ret (with-meta
-                                              (merge {quantifier between}
-                                                     (:before search)
-                                                     (:after search))
-                                              section))))]
-            (recur (max i between-end) {} (or ret* ret)))
-
-          ;; If there is NO quantifier, i.e. the entire fragment is `before`,
-          ;; we add the bindings to the result vector and increment the index.
-          (:before search)
-          (let [before-section (meta (:before search))
-                section        {:begin (:begin before-section)
-                                :end   (+ (:begin before-section)
-                                          (count before))}
-                ret*           (conj ret (with-meta (merge (:before search)
-                                                           (:after search))
-                                                    section))]
-            (recur (:end before-section) {} ret*))
-
-          ;; An unsuccessful search will return the empty list of results.
-          :else ret)))))
-
-(defn- bindings-delta
-  "Get a delta of the local bindings as a map by comparing `cnode` to `hnode`.
-  Will return nil if the two nodes do not match."
-  [cnode hnode]
-  (cond
-    ;; Nothing to bind. Skip to next node.
-    (= cnode hnode)
+    (= pnode node)
     {}
 
-    ;; Branches (= Hiccup vectors) can be captured here.
-    (and (vector? cnode)
-         (vector? hnode))
-    (let [cv     (hicv cnode)
-          hv     (hicv hnode)
-          cnodes (subvec cv 2)
-          hnodes (subvec hv 2)]
-      (when-let [tag+attr-delta (tag+attr-bindings (subvec cv 0 2)
-                                                   (subvec hv 0 2))]
-        ;; Fragments are bounded by segments on either side.
-        (let [[before [fragment & after]] (split-with not-fragment? cnodes)]
-          (if fragment
-            (let [bpatterns      (not-empty (->capture-patterns before))
-                  apatterns      (not-empty (->capture-patterns after))
-                  fnodes         (->nodes fragment)
-                  fragment-count (min-capture (->capture-patterns fnodes))
-                  before-count   (min-capture bpatterns)
-                  after-count    (min-capture apatterns)
-                  max-count      (count hnodes)]
-              ;; As a performance optimisation, only proceed if hnodes fits the
-              ;; min-length requirements.
-              (when (<= (+ before-count after-count fragment-count)
-                        max-count)
-                ;; Fragment search is greedy within the bounded context.
-                (let [<> (fragment-bindings fragment hnodes
-                                            :begin before-count
-                                            :end (- max-count after-count))]
-                  (when (not-empty <>)
-                    (let [split-1 (:begin (meta (first <>)))
-                          split-2 (:end (meta (last <>)))
-                          bnodes  (subvec hnodes 0 split-1)
-                          anodes  (subvec hnodes split-2)]
-                      (when-let [bdelta (if bpatterns
-                                          (pattern-bindings bpatterns bnodes)
-                                          {})]
-                        (when-let [adelta (if apatterns
-                                            (pattern-bindings apatterns anodes)
-                                            {})]
-                          (let [qdelta {'<> (with-meta <>
-                                                       {:begin (+ 2 split-1)
-                                                        :end   (+ 2 split-2)})}]
-                            (with-meta (merge tag+attr-delta
-                                              bdelta
-                                              adelta
-                                              qdelta)
-                                       {:skip [cv hv]})))))))))
+    (syms/wildcard? pnode)
+    {}
 
-            (when-let [delta (pattern-bindings (->capture-patterns cnodes)
-                                               hnodes)]
-              (with-meta (merge tag+attr-delta delta)
-                         {:skip [cv hv]}))))))
+    (syms/variable? pnode)
+    {pnode node}
 
-    ;; Leafs (= content values) can be captured as bindings here.
-    (s/valid? ::cs/? cnode)
-    {cnode hnode}))
+    (and (vector? pnode) (vector? node))
+    (get-bindings pnode node)
+
+    (map? pnode)
+    (attr-bindings pnode node)))
+
+(defn- section-bindings
+  "Get direct bindings for `pnodes` in `nodes` - or nil if they don't match.
+
+  Since this compares every pnode to a corresponding node, the length of the two
+  collections must be identical."
+  [pnodes nodes]
+  (when (= (count pnodes) (count nodes))
+    (->> (map vector pnodes nodes)
+         (reduce (fn [m [pnode node]]
+                   (if-let [delta (node-bindings pnode node)]
+                     (merge m delta)
+                     (reduced nil)))
+                 {}))))
+
+(defn- section-search
+  "Return direct bindings for the first occurrence of `pnodes` in `nodes`."
+  [pnodes nodes]
+  (let [n (count pnodes)]
+    (loop [i 0]
+      (let [nodes (take n (drop i nodes))]
+        (when (>= (count nodes) n)
+          (if-let [delta (section-bindings pnodes nodes)]
+            (with-meta delta
+                       {:from i
+                        :to   (+ i n)})
+            (recur (inc i))))))))
+
+(defn- min-size
+  [pnodes]
+  (count (filter (complement syms/optional?) pnodes)))
+
+;; TODO: probably not very efficient, make faster
+(defn- concat-deltas
+  [deltas]
+  (reduce (fn [m delta]
+            (apply merge-with into m (for [[k v] delta] {k [v]})))
+          {}
+          deltas))
+
+(def ^:private normalise
+  (memoize (fn [coll]
+             (if (map? (second coll))
+               coll
+               (into [(first coll) {}] (rest coll))))))
+
+(def ^:private fixed-length?
+  (memoize (partial every? (complement syms/quantified?))))
+
+;; TODO: repeated patterns cannot themselves contain quantifiers - reconsider?
+(defn- repetition-bindings
+  "Get bindings in `nodes` for a `pnode` containing a repeated pattern.
+
+  Will bind successively until the fixed-length pattern no longer matches."
+  [pnode nodes]
+  (let [pattern (rest pnode)
+        size    (count pattern)
+        parts   (partition size nodes)
+        deltas  (->> (map (partial section-bindings pattern) parts)
+                     (remove nil?))]
+    (when (not (and (syms/some-repeated? pnode)
+                    (empty? deltas)))
+      (with-meta (concat-deltas deltas)
+                 {:from 0
+                  :to   (* size (count deltas))}))))
+
+(defn- arbitrary-bindings
+  "Get bindings in `nodes` for an arbitrary section of `pnodes`.
+
+  This will match all of the nodes and then destructure into individual parts:
+  wildcards, variables, omissions, repetitions. If the number of nodes does not
+  match the arity of the potential quantifier after destructuring, the bindings
+  will be nil."
+  [pnodes nodes]
+  (loop [[pnode & pnodes] pnodes
+         [node & nodes] nodes
+         qnode    nil
+         bindings {}]
+    ;; Match bindings until the section is exhausted.
+    (if pnode
+      (cond
+        (syms/wildcard? pnode)
+        (recur pnodes nodes qnode
+               (if qnode
+                 (update bindings qnode rest)
+                 bindings))
+
+        (syms/variable? pnode)
+        (recur pnodes nodes qnode
+               (if qnode
+                 (let [[node & stack] (get bindings qnode)]
+                   (assoc bindings
+                     pnode node
+                     qnode stack))
+                 (assoc bindings
+                   pnode node)))
+
+        ;; A quantifier will immediately capture any remaining nodes in a stack.
+        ;; Subsequent wildcards or variables will each pop a node off the stack.
+        (syms/quantified? pnode)
+        (recur (reverse pnodes) nil pnode
+               (assoc bindings
+                 pnode (when node
+                         (into `(~node) nodes)))))
+
+      ;; Return bindings when both colls are exhausted.
+      ;; The temporary qnode key is dissoc'ed, with potential bound variables
+      ;; assoc'ed under their appropriate keys instead.
+      (when (not node)
+        (if qnode
+          (if (syms/omitted? qnode)
+            (if (syms/optional? qnode)
+              (dissoc bindings qnode)
+              (when (not-empty (get bindings qnode))
+                (dissoc bindings qnode)))
+            (let [stack (get bindings qnode)
+                  delta (repetition-bindings qnode (reverse stack))]
+              (when (= (-> delta meta :to) (count stack))
+                (-> bindings
+                    (dissoc qnode)
+                    (merge delta)))))
+          bindings)))))
 
 (defn get-bindings
-  "Return the bindings found comparing a Cuphic `pattern` to some `hiccup`.
-  Returns nil if the Hiccup does not match the pattern.
-
-  The two data structures are zipped through in parallel while their bindings
-  are collected incrementally."
+  "Find bindings in `hiccup` for a matching `pattern` - or nil on bad matches."
   [pattern hiccup]
-  (assert (s/valid? ::cs/cuphic pattern))                   ; elide in prod
-  (loop [cloc (hzip/hiccup-zip pattern)
-         hloc (hzip/hiccup-zip hiccup)
-         ret  {}]
-    (if (zip/end? hloc)
-      (with-meta (dissoc ret '? '* '+) {:source hiccup})
-      (when-let [delta (bindings-delta (zip/node cloc) (zip/node hloc))]
-        ;; Subtrees should be skipped in two cases:
-        ;;   1) If the Cuphic pattern is a fragment, e.g. [:<> ...].
-        ;;   2) If the Cuphic pattern contains a quantifier, e.g. + or *.
-        ;; TODO: analyse delta rather than metadata?
-        ;; Currently, metadata notifies the `bindings` function of the need to
-        ;; skip subtrees, although this could also be accomplished by looking at
-        ;; the delta itself.
-        (let [[cloc* hloc*] (if (:skip (meta delta))
-                              [(czip/skip-subtree cloc)
-                               (czip/skip-subtree hloc)]
-                              [cloc hloc])]
-          (recur (zip/next cloc*) (zip/next hloc*) (merge ret delta)))))))
+  (let [pattern      (normalise pattern)
+        hiccup       (normalise hiccup)
+        section-type #(cond
+                        (syms/arbitrary? %) :arbitrary
+                        (syms/repeated? %) :repeated
+                        :else :other)
+        sections     (partition-by section-type pattern)
+        arbitrary?   (comp syms/arbitrary? first)
+        repeated?    (comp syms/repeated? first)]
+    (loop [[pnodes & sections] sections
+           [node :as nodes] hiccup
+           bindings {}]
+      (if pnodes
+        (cond
+          ;; Variable-length, arbitrary sections...
+          (arbitrary? pnodes)
+          ;; ... either match lazily until the next pattern...
+          (if-let [next-section (first sections)]
+            (let [next-section (if (repeated? next-section)
+                                 (rest next-section)
+                                 next-section)
+                  skip         (min-size pnodes)
+                  next-nodes   (drop skip nodes)]
+              (when-let [next-delta (section-search next-section next-nodes)]
+                (let [n (+ skip (:from (meta next-delta)))]
+                  (when-let [delta (arbitrary-bindings pnodes (take n nodes))]
+                    (recur sections (drop n nodes) (merge bindings delta))))))
+
+            ;; ... or until the end (if this is the last pattern in the stack).
+            (when-let [delta (arbitrary-bindings pnodes nodes)]
+              (recur sections nil (merge bindings delta))))
+
+          ;; TODO: should "destructure" an equivalent next section
+          ;; Non-arbitrary, repeated patterns bind while the pattern matches.
+          (repeated? pnodes)
+          (when-let [delta (repetition-bindings (first pnodes) nodes)]
+            (let [{:keys [to]} (meta delta)]
+              (recur sections (drop to nodes) (merge bindings delta))))
+
+          ;; Any other sections simply bind directly to nodes.
+          :else
+          (let [n (count pnodes)]
+            (when-let [delta (section-bindings pnodes (take n nodes))]
+              (recur sections (drop n nodes) (merge bindings delta)))))
+
+        ;; Return bindings once both sections and nodes are both exhausted.
+        (when (not node)
+          (with-meta bindings {:source hiccup}))))))
 
 (defn matches
   "Returns the match, if any, of `hiccup` to a Cuphic `pattern`."
@@ -443,36 +246,54 @@
   (when (get-bindings pattern hiccup)
     hiccup))
 
-(defn- fragment-replace
-  "Given a fragment `loc` and one or more fragment `fbindings`, substitute the
-  loc with the fragments, each fragment's individual bindings applied."
-  [[node :as loc] fbindings]
-  (let [parts              (subvec (hicv node) 2)
-        fbindings->section (fn [symbol->value]
-                             (mapcat (fn [x]
-                                       (if (s/valid? ::cs/quantifier x)
-                                         (symbol->value x)
-                                         [(symbol->value x x)])) parts))
-        replacements       (mapcat fbindings->section fbindings)]
-    (czip/multi-replace loc replacements)))
+(defn- ->repetition-bindings-fn
+  "Helper fn for apply-bindings taking a `bindings` map and returning an fn that
+  acts as (partial get bindings), but in a way such that collections only return
+  the first item while swapping in the rest.
 
+  Calling the returned fn with :done? will return 'true' if a collection has
+  been exhausted.
+
+  Calling the returned fn with :quantified? will return 'true' if a collection
+  has been found among the returned values."
+  [bindings]
+  (let [bindings (atom bindings)]
+    (fn [k]
+      (let [v (get @bindings k)]
+        (if (coll? v)
+          (do
+            (swap! bindings assoc :quantified? true)
+            (when (<= (count v) 1)
+              (swap! bindings assoc :done? true))
+            (swap! bindings update k rest)
+            (first v))
+          v)))))
+
+;; TODO: undefined behaviour for omitted content, wildcards, not found vars
 (defn apply-bindings
-  "Apply symbol->value `bindings` to a Cuphic `pattern`."
-  [bindings pattern]
-  (->> (czip/vector-map-zip pattern)
-       (czip/reduce-zipper (fn [loc node]
-                             (let [replacement (get bindings node)]
-                               (cond
-                                 replacement
-                                 (if (s/valid? ::cs/quantifier node)
-                                   (czip/multi-replace loc replacement)
-                                   (zip/replace loc replacement))
+  "Apply `bindings` to a Cuphic `pattern`.
 
-                                 (and (s/valid? ::cs/fragment node)
-                                      (contains? bindings '<>))
-                                 (fragment-replace loc (get bindings '<>))
-
-                                 :else loc))))))
+  Quantified sub-patterns repeat until a quantified variable is exhausted.
+  If the pattern does not contain any quantified variables, it runs only once."
+  ([bindings pattern]
+   (->> (czip/vector-map-zip pattern)
+        (czip/reduce-zipper
+          (fn [loc pnode]
+            (if (syms/repeated? pnode)
+              ;; A special bindings fn is used to delimit repeated content.
+              ;; The same helper fn is also used to
+              (let [bindings (->repetition-bindings-fn bindings)
+                    pattern  (vec (rest pnode))]
+                (loop [nodes []]
+                  (if (bindings :done?)
+                    (czip/multi-replace loc nodes)
+                    (let [nodes (into nodes (apply-bindings bindings pattern))]
+                      (if (bindings :quantified?)
+                        (recur nodes)
+                        (czip/multi-replace loc nodes))))))
+              (if-let [replacement (bindings pnode)]
+                (zip/replace loc replacement)
+                loc)))))))
 
 (defn transform
   "Transform `hiccup` using Cuphic `from-pattern` and `to-pattern`.
@@ -481,12 +302,12 @@
   symbols in `from-pattern`. The Cuphic patterns can also be replaced with
   functions that either produce or consume a symbol->value map. "
   [from-pattern to-pattern hiccup]
-  (when-let [symbol->value (if (fn? from-pattern)
-                             (from-pattern hiccup)
-                             (get-bindings from-pattern hiccup))]
+  (when-let [bindings (if (fn? from-pattern)
+                        (from-pattern hiccup)
+                        (get-bindings from-pattern hiccup))]
     (if (fn? to-pattern)
-      (to-pattern symbol->value)
-      (apply-bindings symbol->value to-pattern))))
+      (to-pattern bindings)
+      (apply-bindings bindings to-pattern))))
 
 (defn ->transformer
   "Make a transformer to transform Hiccup using `from-pattern` and `to-pattern`.
@@ -576,7 +397,7 @@
 
             {:x '[?tag {:id \"nada\"}]
              :y '[:span {:id ?id}]
-             :z '[?tag {:id ?id}]})
+             :z '[?tag {:id ?id} ...?]})
 
    ... which will return:
 
@@ -600,35 +421,3 @@
                    (merge-with into m)))
             {}
             scans)))
-
-(comment
-  (scan [:div {}
-         [:p {:id "p"}
-          [:span {:id "span"}]]]
-
-        '[?tag {:id "nada"}]                                ; x
-        '[:span {:id ?id}]                                  ; y
-        '[?tag {:id ?id}])                                  ; z
-
-  (scrape [:div {}
-           [:p {:id "p"}
-            [:span {:id "span"}]]]
-
-          {:x '[?tag {:id "nada"}]
-           :y '[:span {:id ?id}]
-           :z '[?tag {:id ?id}]})
-
-  ;; retrieve a loc from metadata
-  (-> (scrape [:div {}
-               [:p {:id "p"}
-                [:span {:id "span"}]]]
-
-              {:nada  '[?tag {:id "nada"}]
-               :glen  '[:span {:id ?id}]
-               :?date '[?tag {:id ?id}]})
-      first
-      second
-      first
-      meta
-      :loc)
-  #_.)
