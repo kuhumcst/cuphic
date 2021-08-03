@@ -421,3 +421,33 @@
                    (merge-with into m)))
             {}
             scans)))
+
+(comment
+  ;; Parse a TEI document as hiccup (CLJ)
+  (def example-tei
+    (-> (clojure.java.io/resource "examples/tei/test-1307-anno-tei.xml")
+        (slurp)
+        (cuphic.xml/parse)))
+
+  ;; Example scrape patterns
+  (def scrape-patterns
+    {:references '[:rs {:type ?type :ref ?ref} ?name]
+     :people     '[:persName {:ref ?ref} ?name]})
+
+  ;; Scraping the TEI document
+  (scrape example-tei scrape-patterns)
+
+  ;; Converting rs references to triples
+  (->> (scrape example-tei scrape-patterns)
+       (:references)
+       (set)
+       (map (fn [{:syms [?type ?ref ?name]}]
+              ["test-1307-anno-tei.xml" (keyword "reference" ?type) ?ref])))
+
+  ;; Converting people references to triples
+  (->> (scrape example-tei scrape-patterns)
+       (:people)
+       (set)
+       (map (fn [{:syms [?ref ?name]}]
+              ["test-1307-anno-tei.xml" :reference/person ?ref])))
+  #_.)
