@@ -8,15 +8,11 @@
 
   See: https://developer.mozilla.org/en-US/docs/Web/API/Node/nodeType"
   (:require [clojure.string :as str])
-  #?(:clj (:import [org.w3c.dom Document Element Text Comment Node]
+  #?(:clj (:import [org.w3c.dom Document Element Text Comment Node NamedNodeMap]
                    [javax.xml.parsers DocumentBuilderFactory DocumentBuilder]
                    [java.io ByteArrayInputStream InputStream File])))
 
-#?(:clj  (defn iter-nodes
-           [nodes]
-           (for [n (range (.getLength nodes))]
-             (.item nodes n)))
-   :cljs (do
+#?(:cljs (do
            (def Document js/Document)
            (def Element js/Element)
            (def Text js/Text)
@@ -50,28 +46,45 @@
 
      :cljs (.-firstChild (.parseFromString parser xml "text/xml"))))
 
+(defn attribute-objects
+  "Retrieve the raw attribute objects from the `node`."
+  [^Node node]
+  #?(:clj  (let [named-node-map (.getAttributes node)]
+             (for [n (range (.getLength named-node-map))]
+               (.item named-node-map n)))
+     :cljs (.-attributes node)))
+
+(defn attribute-key
+  "Retrieve the key from the `attribute` object."
+  [^Node attribute]
+  #?(:clj  (.getNodeName attribute)
+     :cljs (.-name attribute)))
+
+(defn attribute-val
+  "Retrieve the value from the `attribute` object."
+  [^Node attribute]
+  #?(:clj  (.getNodeValue attribute)
+     :cljs (.-value attribute)))
+
+(defn node-attrs
+  "Get a Hiccup attributes map from a `node`."
+  [^Node node]
+  (into {} (for [attribute (attribute-objects node)]
+             [(keywordize (attribute-key attribute))
+              (attribute-val attribute)])))
+
 (defn node-tag
   "Get a Hiccup tag from a `node`."
   [^Node node]
   (keywordize #?(:clj  (.getNodeName node)
                  :cljs (.-tagName node))))
 
-(defn node-attrs
-  "Get a Hiccup attributes map from a `node`."
-  [^Node node]
-  #?(:clj  (let [attributes (iter-nodes (.getAttributes node))]
-             (into {} (for [attribute attributes]
-                        [(keywordize (.getNodeName attribute))
-                         (.getNodeValue attribute)])))
-     :cljs (let [attributes (.-attributes node)]
-             (into {} (for [attribute attributes]
-                        [(keywordize (.-name attribute))
-                         (.-value attribute)])))))
-
 (defn node-content
   "Get the children of the `node` as objects."
   [^Node node]
-  #?(:clj  (iter-nodes (.getChildNodes node))
+  #?(:clj  (let [node-list (.getChildNodes node)]
+             (for [n (range (.getLength node-list))]
+               (.item node-list n)))
      :cljs (.-childNodes node)))
 
 (defn node-data
@@ -81,7 +94,7 @@
    :attrs   (node-attrs node)
    :content (node-content node)})
 
-(defn- whole-text
+(defn whole-text
   [^Text node]
   #?(:clj  (.getWholeText node)
      :cljs (.-wholeText node)))
@@ -93,12 +106,11 @@
 
     Document
     #?(:clj  (node->hiccup
-               (doto (.getDocumentElement node)
+               (doto (.getDocumentElement ^Document node)
                  (.normalize)))
 
        ;; TODO: is the CLJS part relevant?
-       :cljs (do
-               (map node->hiccup (node-content node))))
+       :cljs (map node->hiccup (node-content node)))
 
     Element
     (let [{:keys [tag attrs content]} (node-data node)]
