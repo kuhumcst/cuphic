@@ -1,51 +1,56 @@
 (ns cuphic.core
   "Data transformations for Hiccup."
-  (:require [clojure.spec.alpha :as s]
-            [clojure.zip :as zip]
+  (:require [clojure.zip :as zip]
             [hickory.zip :as hzip]
-            [lambdaisland.deep-diff2 :as dd]
-            #?(:cljs [lambdaisland.deep-diff2.diff-impl :refer [Mismatch
-                                                                Deletion
-                                                                Insertion]])
-            [cuphic.spec :as cs]
             [cuphic.symbols :as syms]
-            [cuphic.zip :as czip])
-  #?(:clj (:import [lambdaisland.deep_diff2.diff_impl Mismatch
-                                                      Deletion
-                                                      Insertion])))
-
-;; TODO: replace brittle deep-diff2, sometimes different diffs in clj vs. cljs
-(defn- attr-bindings
-  "Get the symbol->value mapping found when comparing `cattr` to `hattr`.
-  Returns nil if the two attrs don't match."
-  [cattr hattr]
-  (let [diffs (dd/diff cattr hattr)]
-    (loop [loc (czip/vector-map-zip diffs)
-           ret {}]
-      (if (zip/end? loc)
-        ret
-        (let [{:keys [+ -] :as node} (zip/node loc)]
-          (condp instance? node
-            Deletion
-            nil
-
-            ;; Insertions are problematic unless they are HTML attributes.
-            Insertion
-            (when (and (keyword? +)
-                       ;; Check if a keyword Insertion is inside a map.
-                       (map? (zip/node (zip/up (zip/up loc)))))
-              (recur (zip/next loc) ret))
-
-            ;; Mismatches can indicate matching logic variables.
-            Mismatch
-            (when (symbol? -)
-              (if (s/valid? ::cs/? -)
-                (recur (zip/next loc) (assoc ret - +))
-                (recur (zip/next loc) ret)))
-
-            (recur (zip/next loc) ret)))))))
+            [cuphic.zip :as czip]))
 
 (declare get-bindings)
+(declare node-bindings)
+
+(defn- attr-root-bindings
+  "Return the symbol bindings at the root level of `hattr` based on `cattr`.
+  Handles expected behaviour of wildcards and variables, including optional."
+  [cattr hattr]
+  (reduce (fn [m [k sym]]
+            (if-let [v (get hattr k)]
+              (if (syms/wildcard? sym)
+                m
+                (assoc m sym v))
+              (if (syms/optional-variable? sym)
+                m
+                (reduced nil))))
+          {}
+          cattr))
+
+(defn- attr-other-bindings
+  "Validate matching key-value pairs at the root level for `cattr` and `hattr`
+  and search for the remaining bindings at lower levels of the hattr.
+
+  This function recursively validates the data structure. Any potential bindings
+  at lower levels will be delegated to the 'attr-root-bindings' function, while
+  this function makes sure any other values also match at every level."
+  [cattr hattr]
+  (when (>= (count hattr) (count cattr))                    ; shortcircuit
+    (reduce (fn [m [k cv]]
+              (if-let [hv (get hattr k)]
+                (if-let [delta (node-bindings cv hv)]
+                  (merge m delta)
+                  (reduced nil))
+                (reduced nil)))
+            {}
+            cattr)))
+
+(defn attr-bindings
+  "Return bindings with values from `hattr` using symbols defined in `cattr`."
+  [cattr hattr]
+  (let [k->sym      (into {} (filter (comp syms/slot? second) cattr))
+        sym-keys    (keys k->sym)
+        other-cattr (apply dissoc cattr sym-keys)
+        other-hattr (apply dissoc hattr sym-keys)]
+    (when-let [rem-bindings (attr-other-bindings other-cattr other-hattr)]
+      (when-let [sym-bindings (attr-root-bindings k->sym hattr)]
+        (merge rem-bindings sym-bindings)))))
 
 (defn- node-bindings
   "Return a potential direct binding between `pnode` and `node`."
@@ -57,14 +62,14 @@
     (syms/wildcard? pnode)
     {}
 
-    (syms/variable? pnode)
+    (or (syms/variable? pnode) (syms/optional-variable? pnode))
     {pnode node}
 
-    (and (vector? pnode) (vector? node))
-    (get-bindings pnode node)
+    (and (map? pnode) (map? node))
+    (attr-bindings pnode node)
 
-    (map? pnode)
-    (attr-bindings pnode node)))
+    (and (vector? pnode) (vector? node))
+    (get-bindings pnode node)))
 
 (defn- section-bindings
   "Get direct bindings for `pnodes` in `nodes` - or nil if they don't match.
@@ -95,7 +100,7 @@
 
 (defn- min-size
   [pnodes]
-  (count (filter (complement syms/optional?) pnodes)))
+  (count (filter (complement syms/optional-quantification?) pnodes)))
 
 ;; TODO: probably not very efficient, make faster
 (defn- concat-deltas
@@ -112,7 +117,7 @@
                (into [(first coll) {}] (rest coll))))))
 
 (def ^:private fixed-length?
-  (memoize (partial every? (complement syms/quantified?))))
+  (memoize (partial every? (complement syms/quantification?))))
 
 ;; TODO: repeated patterns cannot themselves contain quantifiers - reconsider?
 (defn- repetition-bindings
@@ -125,7 +130,7 @@
         parts   (partition size nodes)
         deltas  (->> (map (partial section-bindings pattern) parts)
                      (remove nil?))]
-    (when (not (and (syms/some-repeated? pnode)
+    (when (not (and (syms/definite-repetition? pnode)
                     (empty? deltas)))
       (with-meta (concat-deltas deltas)
                  {:from 0
@@ -164,7 +169,7 @@
 
         ;; A quantifier will immediately capture any remaining nodes in a stack.
         ;; Subsequent wildcards or variables will each pop a node off the stack.
-        (syms/quantified? pnode)
+        (syms/quantification? pnode)
         (recur (reverse pnodes) nil pnode
                (assoc bindings
                  pnode (when node
@@ -175,8 +180,8 @@
       ;; assoc'ed under their appropriate keys instead.
       (when (not node)
         (if qnode
-          (if (syms/omitted? qnode)
-            (if (syms/optional? qnode)
+          (if (syms/omission? qnode)
+            (if (syms/optional-quantification? qnode)
               (dissoc bindings qnode)
               (when (not-empty (get bindings qnode))
                 (dissoc bindings qnode)))
@@ -188,57 +193,62 @@
                     (merge delta)))))
           bindings)))))
 
+;; TODO: rename to something else since this assumes vectors?
 (defn get-bindings
   "Find bindings in `hiccup` for a matching `pattern` - or nil on bad matches."
   [pattern hiccup]
-  (let [pattern      (normalise pattern)
-        hiccup       (normalise hiccup)
-        section-type #(cond
-                        (syms/arbitrary? %) :arbitrary
-                        (syms/repeated? %) :repeated
-                        :else :other)
-        sections     (partition-by section-type pattern)
-        arbitrary?   (comp syms/arbitrary? first)
-        repeated?    (comp syms/repeated? first)]
-    (loop [[pnodes & sections] sections
-           [node :as nodes] hiccup
-           bindings {}]
-      (if pnodes
-        (cond
-          ;; Variable-length, arbitrary sections...
-          (arbitrary? pnodes)
-          ;; ... either match lazily until the next pattern...
-          (if-let [next-section (first sections)]
-            (let [next-section (if (repeated? next-section)
-                                 (rest next-section)
-                                 next-section)
-                  skip         (min-size pnodes)
-                  next-nodes   (drop skip nodes)]
-              (when-let [next-delta (section-search next-section next-nodes)]
-                (let [n (+ skip (:from (meta next-delta)))]
-                  (when-let [delta (arbitrary-bindings pnodes (take n nodes))]
-                    (recur sections (drop n nodes) (merge bindings delta))))))
+  ;; String nodes are skipped, cannot match a Cuphic vector directly.
+  (when (vector? hiccup)
+    (let [pattern      (normalise pattern)
+          hiccup       (normalise hiccup)
+          section-type #(cond
+                          (syms/arbitrary? %) :arbitrary
+                          (syms/repetition? %) :repeated
+                          :else :other)
+          sections     (partition-by section-type pattern)
+          arbitrary?   (comp syms/arbitrary? first)
+          repeated?    (comp syms/repetition? first)]
+      (loop [[pnodes & sections] sections
+             [node :as nodes] hiccup
+             bindings {}]
+        (if pnodes
+          (cond
+            ;; Variable-length, arbitrary sections...
+            (arbitrary? pnodes)
+            ;; ... either match lazily until the next pattern...
+            (if-let [next-section (first sections)]
+              (let [next-section (if (repeated? next-section)
+                                   (rest next-section)
+                                   next-section)
+                    skip         (min-size pnodes)
+                    next-nodes   (drop skip nodes)]
+                (when-let [next-delta (section-search next-section next-nodes)]
+                  (let [n (+ skip (:from (meta next-delta)))]
+                    (when-let [delta (arbitrary-bindings pnodes (take n nodes))]
+                      (recur sections (drop n nodes) (merge bindings delta))))))
 
-            ;; ... or until the end (if this is the last pattern in the stack).
-            (when-let [delta (arbitrary-bindings pnodes nodes)]
-              (recur sections nil (merge bindings delta))))
+              ;; ... or until the end (if this is the last pattern in the stack).
+              (when-let [delta (arbitrary-bindings pnodes nodes)]
+                (recur sections nil (merge bindings delta))))
 
-          ;; TODO: should "destructure" an equivalent next section
-          ;; Non-arbitrary, repeated patterns bind while the pattern matches.
-          (repeated? pnodes)
-          (when-let [delta (repetition-bindings (first pnodes) nodes)]
-            (let [{:keys [to]} (meta delta)]
-              (recur sections (drop to nodes) (merge bindings delta))))
+            ;; TODO: should "destructure" an equivalent next section
+            ;; Non-arbitrary, repeated patterns bind while the pattern matches.
+            (repeated? pnodes)
+            (when-let [delta (repetition-bindings (first pnodes) nodes)]
+              (let [{:keys [to]} (meta delta)]
+                (recur sections (drop to nodes) (merge bindings delta))))
 
-          ;; Any other sections simply bind directly to nodes.
-          :else
-          (let [n (count pnodes)]
-            (when-let [delta (section-bindings pnodes (take n nodes))]
-              (recur sections (drop n nodes) (merge bindings delta)))))
+            ;; Any other sections simply bind directly to nodes.
+            :else
+            (let [n (count pnodes)]
+              (when-let [delta (section-bindings pnodes (take n nodes))]
+                (recur sections (drop n nodes) (merge bindings delta)))))
 
-        ;; Return bindings once both sections and nodes are both exhausted.
-        (when (not node)
-          (with-meta bindings {:source hiccup}))))))
+          ;; Return bindings once both sections and nodes are both exhausted.
+          (when (not node)
+            ;; TODO: maybe never assoc these bindings?
+            (with-meta (dissoc bindings syms/omission syms/optional-omission)
+                       {:source hiccup})))))))
 
 (defn matches
   "Returns the match, if any, of `hiccup` to a Cuphic `pattern`."
@@ -279,7 +289,7 @@
    (->> (czip/vector-map-zip pattern)
         (czip/reduce-zipper
           (fn [loc pnode]
-            (if (syms/repeated? pnode)
+            (if (syms/repetition? pnode)
               ;; A special bindings fn is used to delimit repeated content.
               ;; The same helper fn is also used to
               (let [bindings (->repetition-bindings-fn bindings)
@@ -354,22 +364,32 @@
                                    loc))
                                loc)))))
 
+(defn- pattern->bindings-fn
+  "Return a function that takes a loc and returns bindings based on `pattern`."
+  [pattern]
+  (fn [loc]
+    (get-bindings pattern (zip/node loc))))
+
 (defn scan
   "Given some `hiccup` and one or more Cuphic `patterns` to match, return a lazy
   sequence of match results. Each result - successful or not - has the form
   [loc bindings-1 ... bindings-n] with n being the number of Cuphic patterns.
 
   Results come in the order they are scanned while iterating through the zipper.
-  Many result rows will probably have nil results for most or all patterns.
+  Many result rows will probably have nil results for most of the patterns.
+  Result rows with no pattern matches are always removed before returning.
   The result rows also include the loc, making it possible to see the exact
-  state of the zipper at each node and retrieve the node itself."
+  state of the zipper at each node and retrieve the node itself.
+
+  WARNING: not suitable for REPL output as every line of output will contain a
+  (typically quite sizable) zipper data structure."
   [hiccup & patterns]
-  (let [pattern->bindings-fn #(comp (partial get-bindings %) first)
-        bindings-fns         (map pattern->bindings-fn patterns)
-        loc->result-row      (apply juxt identity bindings-fns)]
+  (let [bindings-fns    (map pattern->bindings-fn patterns)
+        contains-match? (fn [row] (not-every? nil? (rest row)))]
     (->> (hzip/hiccup-zip hiccup)
          (czip/iterate-zipper)
-         (map loc->result-row))))
+         (map (apply juxt identity bindings-fns))
+         (filter contains-match?))))
 
 (defn select-all
   "Select all nodes in `hiccup` matching the Cuphic `pattern`."
@@ -395,17 +415,17 @@
              [:p {:id \"p\"}
               [:span {:id \"span\"}]]]
 
-            {:x '[?tag {:id \"nada\"}]
-             :y '[:span {:id ?id}]
-             :z '[?tag {:id ?id} ...?]})
+            {:x '[tag {:id \"nada\"}]
+             :y '[:span {:id id}]
+             :z '[tag {:id id} ???]})
 
    ... which will return:
 
-     {:y [{?id \"span\"}]
-      :z [{?tag :p
-           ?id  \"p\"}
-          {?tag :span
-           ?id  \"span\"}]}
+     {:y [{id \"span\"}]
+      :z [{tag :p
+           id  \"p\"}
+          {tag :span
+           id  \"span\"}]}
 
   For a more low-level operation, try the scan function defined above instead."
   [hiccup k->pattern]
@@ -423,16 +443,21 @@
             scans)))
 
 (comment
+  (require 'cuphic.xml)
   ;; Parse a TEI document as hiccup (CLJ)
   (def example-tei
     (-> (clojure.java.io/resource "examples/tei/test-1307-anno-tei.xml")
         (slurp)
         (cuphic.xml/parse)))
 
+  ;; Scan the example, returning the content of every paragraph
+  ;; WARNING: this will print out all of the zipper state too!
+  (scan example-tei '[:p {} (??? content)])
+
   ;; Example scrape patterns
   (def scrape-patterns
-    {:references '[:rs {:type ?type :ref ?ref} ?name]
-     :people     '[:persName {:ref ?ref} ?name]})
+    {:references '[:rs {:type ?type :ref ref} ?name]
+     :people     '[:persName {:ref ref} ?name]})
 
   ;; Scraping the TEI document
   (scrape example-tei scrape-patterns)
@@ -441,13 +466,15 @@
   (->> (scrape example-tei scrape-patterns)
        (:references)
        (set)
-       (map (fn [{:syms [?type ?ref ?name]}]
-              ["test-1307-anno-tei.xml" (keyword "reference" ?type) ?ref])))
+       (map (fn [{:syms [?type ref ?name]}]
+              (if ?type
+                ["test-1307-anno-tei.xml" (keyword "reference" ?type) ref]
+                ["test-1307-anno-tei.xml" :reference/other ref]))))
 
   ;; Converting people references to triples
   (->> (scrape example-tei scrape-patterns)
        (:people)
        (set)
-       (map (fn [{:syms [?ref ?name]}]
-              ["test-1307-anno-tei.xml" :reference/person ?ref])))
+       (map (fn [{:syms [ref ?name]}]
+              ["test-1307-anno-tei.xml" :reference/person ref])))
   #_.)

@@ -8,7 +8,6 @@
             [dk.cst.stucco.plastic :as plastic]
             [dk.cst.stucco.util.css :as stucco-css]
             [rescope.helpers :as helpers]
-            [rescope.select :as select]
             [rescope.style :as style]
             [rescope.interop :as interop]
             [rescope.core :as rescope]))
@@ -56,21 +55,21 @@
 
 (def list-as-ul
   (cup/->transformer
-    '[:list +items]
+    '[:list (... list-items)]
 
-    (fn [{:syms [+items]}]
-      (into [:ul] (for [[tag attr & content] +items]
+    (fn [{:syms [list-items]}]
+      (into [:ul] (for [[tag attr & content] list-items]
                     (into [:li] content))))))
 
 (def ref-as-anchor
   (cup/->transformer
-    '[? {:ref  ?ref
-         :type ?type} *]
+    '[_ {:ref  ref
+         :type ?type} ???]
 
-    (fn [{:syms [?ref ?type]}]
-      ;; TODO: bug in attr-bindings - now need to check for attr existence
-      (when ?ref
-        [:a {:href  ?ref
+    ;; A combination of keys and syms is needed for optional values
+    (fn [{:syms [ref ?type] :as m}]
+      (when ref
+        [:a {:href  ref
              :title (da-type ?type)}
          [:slot]]))))
 
@@ -96,13 +95,13 @@
 ;; it will be skipped entirely.
 (def carousel-pbs
   (cup/->transformer
-    '[:div * [:<> [:pb] +]]
+    '[:div (... content)]
 
-    (fn [{:syms [<>] :as bindings}]
-      (let [{:keys [begin end]} (meta <>)
-            source     (:source (meta bindings))
-            pages      (->> (subvec source begin end)
-                            (partition-by #(= :pb (first %)))
+    ;; TODO: only works when there's a div with opener + pbs, fix!
+    (fn [{:syms [content]}]
+      (let [sections   (partition-by #(= :pb (first %)) content)
+            opener     (first sections)
+            pages      (->> (rest sections)
                             (partition 2)
                             (map (partial apply concat)))
             pp         (count pages)
@@ -113,7 +112,7 @@
                          (let [rewrite #(cup/rewrite % inner-stage)]
                            [k (into [:<>] (map rewrite v))]))]
         [:<>
-         [cup/rewrite (subvec source 0 begin) inner-stage]
+         (into [:<>] (cup/rewrite opener inner-stage))
          [plastic/carousel
           {:i   0
            :kvs (map rewrite-kv kvs)}
@@ -133,12 +132,10 @@
   []
   (let [hiccup     (xml/parse tei-example)
         hiccup*    (cup/rewrite hiccup outer-stage)
-        teiheader  (select/one hiccup* (select/element :tei-teiheader))
-        facsimile  (select/one hiccup* (select/element :tei-facsimile))
-        text       (select/one hiccup* (select/element :tei-text))
-        test-nodes (select/all hiccup*
-                               (select/element :tei-forename)
-                               (select/attr {:data-type "first"}))]
+        teiheader  (cup/select-one hiccup* '[:tei-teiHeader {} ???])
+        facsimile  (cup/select-one hiccup* '[:tei-facsimile {} ???])
+        text       (cup/select-one hiccup* '[:tei-text {} ???])
+        test-nodes (cup/select-all hiccup* '[:tei-forename {:data-type "first"} ???])]
     (reset! css-href (interop/blob-url [tei-css] {:type "text/css"}))
     [:<>
      [:fieldset
@@ -155,12 +152,12 @@
 
       ;; Test searching for terms
       [:pre (with-out-str (pprint (cup/scrape hiccup
-                                              {:x '[?tag {:when ?when}]
-                                               :y '[?tag {:when "2020"}]})))]
+                                              {:x '[tag {:when when} ?x]
+                                               :y '[tag {:when "2020"} ?x]})))]
       ;; Test scanning for terms
       #_[:pre (with-out-str (pprint (cup/scan hiccup
-                                              '[?tag {:when ?when}]
-                                              '[?tag {:when "2020"}])))]
+                                              '[tag {:when when} ?x]
+                                              '[tag {:when "2020"} ?x])))]
 
       ;; This is just left here as a proof of concept. Using <link> over <style>
       ;; in a shadow DOM introduces a bit of flickering in Chrome and Firefox,
