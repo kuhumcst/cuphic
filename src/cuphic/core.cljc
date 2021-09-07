@@ -279,6 +279,7 @@
             (first v))
           v)))))
 
+;; TODO: multi-replace behaviour has changed since writing this function
 ;; TODO: undefined behaviour for omitted content, wildcards, not found vars
 (defn apply-bindings
   "Apply `bindings` to a Cuphic `pattern`.
@@ -344,8 +345,23 @@
                new-node)
              node)))
 
+(defn rewrite-loc
+  "Apply the `stage` to the current `loc`. Helper function for 'rewrite'."
+  [loc stage]
+  (let [old-node (zip/node loc)
+        new-node (apply-stage old-node stage)]
+    (if (not= old-node new-node)
+      (if (seq? new-node)
+        (czip/multi-replace loc new-node)
+        (zip/replace loc new-node))
+      loc)))
+
 (defn rewrite
   "Process the nodes of some `hiccup` in one or more transformation `stages`.
+
+  A stage is applied in full to the entire Hiccup tree, handing over a modified
+  tree to the next stage which then traverses the entire modified tree again.
+  For this reason, only very few stages should be used when rewriting Hiccup.
 
   Stages are maps with the following keys (optional):
     :transformers - sequence of transformer fns applied to each Hiccup node.
@@ -355,14 +371,12 @@
   A transformer is an fn that, given a Hiccup node, attempts to match the node,
   returning a transformed node on matches, otherwise returning nil."
   [hiccup & stages]
-  (->> (hzip/hiccup-zip hiccup)
-       (czip/reduce-zipper (fn [loc node]
-                             (if (vector? node)
-                               (let [node* (reduce apply-stage node stages)]
-                                 (if (not= node node*)
-                                   (zip/replace loc node*)
-                                   loc))
-                               loc)))))
+  (loop [hiccup hiccup
+         [stage & stages] stages]
+    (if stage
+      (let [loc (hzip/hiccup-zip hiccup)]
+        (recur (czip/reduce-zipper #(rewrite-loc % stage) loc) stages))
+      hiccup)))
 
 (defn- pattern->bindings-fn
   "Return a function that takes a loc and returns bindings based on `pattern`."

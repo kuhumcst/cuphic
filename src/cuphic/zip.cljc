@@ -40,5 +40,5 @@
 
 (defn multi-replace
   "Replace `loc` with `nodes`."
-  [loc nodes]
-  (zip/remove (reduce zip/insert-left loc nodes)))
+  [loc [node & nodes]]
+  (reduce zip/insert-right (zip/replace loc node) (reverse nodes)))
