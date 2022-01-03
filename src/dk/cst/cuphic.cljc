@@ -1,9 +1,9 @@
-(ns cuphic.core
+(ns dk.cst.cuphic
   "Data transformations for Hiccup."
   (:require [clojure.zip :as zip]
             [hickory.zip :as hzip]
-            [cuphic.symbols :as syms]
-            [cuphic.zip :as czip]))
+            [dk.cst.cuphic.symbols :as syms]
+            [dk.cst.cuphic.zip :as czip]))
 
 (declare get-bindings)
 (declare node-bindings)

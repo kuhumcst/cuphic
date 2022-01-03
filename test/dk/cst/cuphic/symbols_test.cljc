@@ -1,6 +1,6 @@
-(ns cuphic.symbols-test
+(ns dk.cst.cuphic.symbols-test
   (:require [clojure.test :refer [deftest is are testing]]
-            [cuphic.symbols :as syms]))
+            [dk.cst.cuphic.symbols :as syms]))
 
 (deftest test-slot-type
   (testing "expected slot types for different pattern nodes"

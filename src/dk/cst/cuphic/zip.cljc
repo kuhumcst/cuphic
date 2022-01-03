@@ -1,4 +1,4 @@
-(ns cuphic.zip
+(ns dk.cst.cuphic.zip
   "Generic zipper functions."
   (:require [clojure.zip :as zip]))
 

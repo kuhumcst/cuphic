@@ -1,6 +1,6 @@
-(ns cuphic.core-test
+(ns dk.cst.cuphic-test
   (:require [clojure.test :refer [deftest are is testing]]
-            [cuphic.core :as cup]))
+            [dk.cst.cuphic :as cup]))
 
 (def document
   [:TEI

@@ -1,4 +1,4 @@
-(ns cuphic.symbols
+(ns dk.cst.cuphic.symbols
   "These are the special symbols used in Cuphic:
 
       ?      -  optional node (the slot can be filled by a node -OR- be empty)
